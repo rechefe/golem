@@ -12,7 +12,7 @@ not this one.
 
 | Workflow | Trigger | Runs as | Job |
 |---|---|---|---|
-| `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues and labels only. |
+| `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
@@ -73,7 +73,7 @@ stateDiagram-v2
     running --> ready: agent run failed, workflow resets it
     running --> running: rework, PR red or request_changes
     running --> stuck: 3 attempts used
-    running --> closed: PR merged
+    running --> closed: PR merged — the label is not cleared
     stuck --> [*]: owner decides
     closed --> [*]
 ```
@@ -112,6 +112,13 @@ Two consequences worth internalising:
 - **Scope is not invented.** Step 5 may only draw on `PLAN.md` and requirements already merged
   into `spec/` on `main`.
 
+**On Sundays it has a second mode.** `orchestrator.yaml` branches on the day of the week — or
+on the `digest` boolean of a manual dispatch — and opens a `Digest YYYY-Www` issue: merged PRs
+per milestone, milestone status, agent runs against budget, open `status:stuck` issues, spec
+PRs awaiting the owner, and **every `## Weakened properties` section merged that week**. That
+last one matters: `CLAUDE.md` requires a PR that removes or loosens a property to declare it,
+and the digest is the only place those declarations reach a human.
+
 ## Inside a worker agent run
 
 ```mermaid
@@ -131,12 +138,18 @@ flowchart TD
     run --> cleanup["remove agent:ROLE"]
     cleanup --> ok{"run succeeded?"}
     ok -->|no| back["status:running to status:ready, so it can be retried"]
-    ok -->|yes| stay["leave status:running until the PR merges"]
+    ok -->|yes| stay["leave status:running"]
 ```
 
 The `Attempt N/3` comment is posted **before** the agent starts, so the issue always carries a
 click-through link to the live run. That comment is also the attempt counter — the workflow
 counts them to decide when to give up.
+
+Note the asymmetry on the last two branches: a **failed** run resets the issue to
+`status:ready`, but nothing ever clears `status:running`. No workflow reacts to a merge, so an
+issue closed by its PR's `Closes #<issue>` stays closed *and* labelled `status:running`
+forever. Harmless — the orchestrator's invariant is scoped to open issues — but it is the same
+asymmetry as gap 1, in its benign form.
 
 ## The three worker roles
 
@@ -147,7 +160,7 @@ flowchart LR
     spec --> v["verifier"]
     d --> dl["rtl/, src/*.v,<br/>src/config.json, info.yaml"]
     v --> vl["formal/, test/"]
-    dl -. "ports only, by instruction — see gap 4" .-> v
+    dl -.->|"ports only, by instruction — see gap 4"| v
 ```
 
 Designer and verifier work from the **same spec, in separate runs, and are told not to read
@@ -192,7 +205,7 @@ flowchart TD
     fork -->|yes| fail["fail the check; the owner reviews by hand"]
     fork -->|no| co1["check out main at the repo root — trusted"]
     co1 --> co2["check out the PR head into pr-head/ — data only, never executed"]
-    co2 --> rvw["Claude: read-only tools plus gh pr read/comment"]
+    co2 --> rvw["Claude: read-only in the workspace,<br/>plus gh pr/issue reads and gh pr comment"]
     rvw --> out["post findings, return a structured verdict"]
     out --> res{"approve?"}
     res -->|yes| green["reviewer check green"]
@@ -277,7 +290,9 @@ implementation does not yet meet it. Check open issues before trusting this list
 1. **A successful run that produces no PR strands its issue.** `agent.yaml` resets
    `status:running` to `status:ready` only when the run *fails*, and the orchestrator's rework
    step needs an open PR to inspect. An agent that finishes cleanly without opening a PR
-   leaves the issue marked running forever, with nothing to retry it.
+   leaves the issue marked running forever, with nothing to retry it. The benign variant of
+   the same asymmetry: nothing clears `status:running` on a merge either, so closed issues
+   keep the label.
 2. **An agent cannot report "this task is impossible" in a way anything notices.** Its role
    file asks it to comment on the issue; nothing enforces that. Unlike the reviewer, worker
    agents return no structured outcome.
