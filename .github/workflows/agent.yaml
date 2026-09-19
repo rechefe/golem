@@ -6,6 +6,13 @@
 #    so text from strangers never becomes a prompt.
 #  - The Claude token lives in the `agents` environment, readable only from `main`.
 #  - claude-code-action re-checks that the actor has write access (bots only via allowed_bots).
+#
+# Visibility: `display_report: true` writes Claude's run report to the job's Step Summary.
+# Safe here only because every trigger is gated to issues and actors we trust. Never set
+# `show_full_output` (public logs; it prints unredacted tool results). `track_progress` is
+# deliberately NOT set: it forces the action's tag mode, which prepends its own instructions
+# ahead of ours, forbids creating new comments and blocks branch work beyond commit+push --
+# our agents must comment on their issue and open a PR.
 name: agent
 
 on:
@@ -128,6 +135,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: claude
+          display_report: true
           prompt: |
             You are the ${{ steps.ctx.outputs.role }} agent for ${{ github.repository }}.
             Read CLAUDE.md, then agents/${{ steps.ctx.outputs.role }}.md, then do the work in

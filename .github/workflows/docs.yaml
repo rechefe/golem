@@ -1,7 +1,13 @@
+# Datasheet build. Paced like `gds`: pull requests to main, main itself, and nightly.
 name: docs
 
 on:
+  pull_request:
+    branches: [main]
   push:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * *"  # 05:00 Israel time
   workflow_dispatch:
 
 jobs:
