@@ -74,9 +74,11 @@ direction control, any clock divider, and any bit-stream processing whatsoever.
 
 ## Reference clock
 
-The studies quote cycle counts at **48 MHz** and, where it matters, at the 50 MHz currently in
-`info.yaml`. The choice is not neutral: USB low speed needs an integer, jitter-free divide and
-48 MHz gives one while 50 MHz does not. See `usb_ls.md` (`GAP-USB-001`) and `Q-001`.
+The studies quote cycle counts at **48 MHz** and, where it matters, at the 50 MHz that was in
+`info.yaml` when they were written. The choice is not neutral: USB low speed needs an integer,
+jitter-free divide and 48 MHz gives one while 50 MHz does not. The owner has since settled the
+clock at 48 MHz, so every cycle count here is the live one. See `usb_ls.md` (`GAP-USB-001`)
+and `summary.md` `Q-001`.
 
 ## Sources
 

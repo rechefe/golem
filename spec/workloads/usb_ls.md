@@ -211,9 +211,9 @@ deadline timer or the host:
 **`GAP-USB-001` — 1.5 Mbit/s is not an integer divide of the current clock.**
 50 MHz gives 33.33 cycles per bit. A fractional divider's ±0.5-cycle edge placement is ±1.5% of
 a bit time, which is the entire low-speed tolerance. 48 MHz gives exactly 32.
-*Proposed*: **run the chip at 48 MHz** (24 or 96 MHz also divide exactly). This contradicts
-`info.yaml`, which says 50 MHz, and is the one recommendation in this study that costs the
-designer work. → `Q-001`.
+*Proposed*: **run the chip at 48 MHz** (24 or 96 MHz also divide exactly). This was the one
+recommendation in this study that cost the designer work, and the owner has **accepted** it;
+`info.yaml` moves from 50 MHz to 48. → `Q-001`, answered.
 *Also proposed regardless*: the tick divider of `MAC-CLK-001` carries a fractional part, because
 UART at 115200 needs it and it costs ~16 flops.
 

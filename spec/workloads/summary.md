@@ -177,20 +177,27 @@ Tiny Tapeout gives 8 dedicated inputs (`ui`), 8 dedicated outputs (`uo`) and 8 b
 | JTAG | 1 | 3 | — | 4 |
 | USB LS | — | 1 | 2 | 3 |
 
-Proposed allocation: the host SPI link on `ui[2:0]` (SCK, MOSI, CSn) and `uo[0]` (MISO); the
-eight `uio` as the protocol pin array; `ui[7:3]` and `uo[7:1]` as input-only and output-only
+Proposed allocation: the host SPI link on `ui[2:0]` (CSn, SCK, MOSI) and **`uo[3]`** (MISO); the
+eight `uio` as the protocol pin array; the remaining `ui` and `uo` as input-only and output-only
 protocol pins. Worst case if every bidirectional protocol were active at once is 5 of the 8
 `uio`, so the pin array is not the binding constraint — the instruction memory is.
 
+> **Corrected by the owner (issue #7).** This section originally put MISO on `uo[0]`. That pin
+> is GPIO5 = `SPI0_SS_N` on the RP2040 demo board and cannot receive, so the host would have to
+> bit-bang the link; `uo[3]` lets both demo board generations drive it with a hardware SPI
+> peripheral. `uo[0]` carries `ATTN` instead. The host link needs no bidirectional pin, so all
+> eight `uio` stay free for protocols. `spec/top.md` is the authority; this line is kept
+> corrected only so the study does not contradict it.
+
 ## Questions for the owner
 
-**`Q-001` — clock frequency: 48 MHz or 50 MHz?**
-`info.yaml` says 50 MHz. USB low speed needs 1.5 Mbit/s with no jitter, and 50 MHz gives 33.33
+**`Q-001` — clock frequency: 48 MHz or 50 MHz? — ANSWERED: 48 MHz.**
+`info.yaml` said 50 MHz. USB low speed needs 1.5 Mbit/s with no jitter, and 50 MHz gives 33.33
 cycles per bit while 48 MHz gives exactly 32. A fractional divider at 50 MHz places edges ±1.5%
 of a bit time from nominal, which is the entire low-speed tolerance before the host's own error.
-Every other workload is indifferent. If the answer is 48 MHz, `info.yaml` and `spec/top.md`
-change and the UART gate block's divisor changes with them — designer work, filed as an
-`agent:designer` issue once this study is accepted. See `usb_ls.md` `GAP-USB-001`.
+Every other workload is indifferent. The owner settled this at **48 MHz**; `info.yaml`,
+`src/config.json` and the UART gate block's divisor are issue #8, and `spec/top.md` is issue #7.
+Every cycle count in this study was already quoted at 48 MHz. See `usb_ls.md` `GAP-USB-001`.
 
 **`Q-002` — instruction memory: how many sequencers, how many words, built from what?**
 32 words × 4 sequencers is what the programs need. The rough area arithmetic above puts a
