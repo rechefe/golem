@@ -5,6 +5,9 @@
 #    pr-head/ as read-only material and nothing from it is executed.
 #  - Claude gets read tools and `gh pr` read/comment commands only; no general shell.
 #  - PRs from forks never reach Claude: the check fails and the owner decides.
+#
+# Visibility: `display_report: true` puts the review report in the job's Step Summary.
+# `track_progress` is not available here at all -- it throws on `pull_request_target`.
 name: reviewer
 
 on:
@@ -51,6 +54,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: claude
+          display_report: true
           prompt: |
             You are the reviewer agent for ${{ github.repository }}.
             Read CLAUDE.md, then agents/reviewer.md, then review PR #${{ github.event.pull_request.number }}.
