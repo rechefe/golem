@@ -15,11 +15,15 @@ not this one.
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues and labels only. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
-| `ci.yaml` | every push | — | `rtl`, `sim`, `formal`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly | — | Hardening, precheck, gate-level test, datasheet. |
+| `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
+| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. |
+| `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
+| `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | Nexys Video bitstream. Never wired into the agent loop. |
 
-There are **five agent roles** but only **four workflows**: `spec`, `designer` and `verifier`
-all run through `agent.yaml` and differ only in their role file and their lane.
+There are **five agent roles** carried by **three** workflows: `orchestrator.yaml`,
+`reviewer.yaml`, and `agent.yaml` — which runs `spec`, `designer` and `verifier`, differing
+only in their role file and their lane. The other five files build, harden or set up the
+repository; no agent runs in them.
 
 ## The whole loop
 
@@ -36,14 +40,27 @@ flowchart TD
     pr --> rev["reviewer.yaml"]
     rev --> verdict{"verdict"}
     verdict -->|approve| gate(["owner merges"])
-    verdict -->|request_changes| agent
-    checks -->|red| agent
+    verdict -->|request_changes| orch
+    checks -->|red| orch
+    orch -->|"rework: re-adds agent:ROLE, next daily run"| agent
     gate --> done(["issue closed"])
 ```
 
-The orchestrator does **not** supervise agents. It adds a label and exits. Everything after
-that is GitHub Actions reacting to events. Keeping the orchestrator alive longer would change
-nothing and cost budget.
+The orchestrator does **not** supervise agents. It adds a label and exits, and the **forward**
+path — push, PR, checks, review — is GitHub Actions reacting to events.
+
+**The return path is not.** Nothing fires on a red check or a `request_changes` verdict:
+`reviewer.yaml` merely exits non-zero, `ci.yaml` has no downstream trigger, and `agent.yaml`
+listens only for `issues: labeled` and `workflow_dispatch`. The only thing that puts an issue
+back to work is the orchestrator's **step 3, Rework**, on its *next scheduled run*. Three
+consequences follow, and they are the ones that actually bite:
+
+- a red PR can sit up to **~24 hours** before anything touches it;
+- the retry is charged against `AGENT_RUNS_PER_DAY`;
+- it burns one of the issue's **three attempts**.
+
+Keeping the orchestrator alive longer fixes none of that — the retry lands on the next run
+either way, and polling in between costs budget for no information.
 
 ## An issue's life
 
@@ -130,7 +147,7 @@ flowchart LR
     spec --> v["verifier"]
     d --> dl["rtl/, src/*.v,<br/>src/config.json, info.yaml"]
     v --> vl["formal/, test/"]
-    dl -. "ports only, as a black box" .-> v
+    dl -. "ports only, by instruction — see gap 4" .-> v
 ```
 
 Designer and verifier work from the **same spec, in separate runs, and are told not to read
@@ -243,7 +260,10 @@ Agent runs execute in GitHub Actions. They are **not** claude.ai sessions and do
 the Claude web or mobile interface; there is no setting that changes this. What exists:
 
 - the `Attempt N/3 … Run: <url>` comment on the issue, which is also your phone notification
-  if you watch the repository in the GitHub mobile app;
+  if you watch the repository in the GitHub mobile app. It is posted by
+  **`github-actions[bot]`**, not `claude[bot]` — the workflow posts it with `github.token`
+  before Claude starts — and the attempt counter matches on exactly that author, so a
+  miscount is usually a comment written by the wrong identity;
 - `display_report: true` on the agent, reviewer and orchestrator workflows, which writes
   Claude's turn-by-turn report to the **job's Step Summary** — visible on the run's summary
   page in a browser, not in the log, and not exposed by any REST endpoint;
@@ -270,5 +290,8 @@ implementation does not yet meet it. Check open issues before trusting this list
    the rework path needs a PR to show red checks.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
-   `Edit`/`Write` there are not denied. Nothing has done so, and the role files forbid it, but
-   the enforcement is weaker than the design assumes.
+   `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
+   verifier's deny is `Read(./rtl/**)` alone, while `src/*.v` is that same design emitted as
+   Verilog and the Read tool reaches all of it — `verifier.md` asks for module headers only,
+   and nothing enforces that. Nothing has broken these rules, and the role files forbid it,
+   but the enforcement is weaker than the design assumes.
