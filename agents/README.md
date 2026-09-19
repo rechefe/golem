@@ -133,18 +133,25 @@ flowchart LR
     dl -. "ports only, as a black box" .-> v
 ```
 
-Designer and verifier work from the **same spec, in separate runs, and never read each
-other's lane** — enforced mechanically, not by good manners:
+Designer and verifier work from the **same spec, in separate runs, and are told not to read
+each other's lane.** `agent.yaml` denies the **Read tool** on those paths:
 
 ```yaml
 designer) deny='"Read(./formal/**)" "Read(./test/**)"' ;;
 verifier) deny='"Read(./rtl/**)"' ;;
 ```
 
-The point: a failing property then tells the designer something about **the spec**, not about
-the verifier's phrasing. When the two disagree, the disagreement is evidence that the spec is
-ambiguous — and the fix is a spec clarification, not a negotiation. This is why a change that
-touches both lanes needs **two issues**, one per role, for the same requirement IDs.
+**That is a guard rail, not a sandbox.** The same run allows
+`--allowedTools "Bash,Read,Edit,Write,Glob,Grep,TodoWrite"`, and `Bash` is unrestricted — an
+agent that ran `cat formal/uart_tx_props.v` would not be stopped, and `Edit`/`Write` into the
+other lane are not denied either. The separation rests on the deny list *plus* the role files
+in `designer.md` and `verifier.md`. See gap 4 below.
+
+The point of the separation: a failing property then tells the designer something about **the
+spec**, not about the verifier's phrasing. When the two disagree, the disagreement is evidence
+that the spec is ambiguous — and the fix is a spec clarification, not a negotiation. This is
+why a change that touches both lanes needs **two issues**, one per role, for the same
+requirement IDs.
 
 ## The spec agent has two doors
 
@@ -188,19 +195,29 @@ The reviewer is also the only agent required to return a machine-readable verdic
 Text becomes instructions only if it comes from the prompt, `CLAUDE.md`, `agents/`, or an
 issue or comment written by `rechefe` or `claude[bot]`. Everything else is data.
 
-`agent.yaml` enforces that in its `if:` guard, and it checks **two** identities:
+`agent.yaml` enforces that in its `if:` guard:
 
 ```yaml
-contains(fromJSON('["rechefe","claude[bot]"]'), github.event.sender.login) &&
-contains(fromJSON('["rechefe","claude[bot]"]'), github.event.issue.user.login)
+github.event_name == 'workflow_dispatch' ||
+(startsWith(github.event.label.name, 'agent:') &&
+ contains(fromJSON('["rechefe","claude[bot]"]'), github.event.sender.login) &&
+ contains(fromJSON('["rechefe","claude[bot]"]'), github.event.issue.user.login))
 ```
+
+On the **label path**, two identities are checked and both must pass:
 
 - **sender** — who added the label. Stops a stranger dispatching an agent.
 - **issue author** — who wrote the issue. Stops a stranger's text becoming an agent's prompt
   even if a trusted account labels it.
 
-Both must pass. This is why the orchestrator can close the loop at all: it runs as
-`claude[bot]`, so issues it files and labels it adds satisfy both checks.
+That both hold for `claude[bot]` is why the orchestrator can close the loop at all: issues it
+files and labels it adds satisfy the checks.
+
+The leading `workflow_dispatch ||` is a **deliberate bypass of both**. Triggering a workflow by
+hand already requires write access to the repository, so the sender is trusted by construction
+— but note what it does *not* check: a manual dispatch names an issue number directly, so it
+can point an agent at an issue written by anyone. Dispatching by hand means vouching for the
+issue's text yourself.
 
 Two more deliberate choices:
 
@@ -244,5 +261,14 @@ implementation does not yet meet it. Check open issues before trusting this list
 2. **An agent cannot report "this task is impossible" in a way anything notices.** Its role
    file asks it to comment on the issue; nothing enforces that. Unlike the reviewer, worker
    agents return no structured outcome.
-3. **Unconfirmed: whether pushes to an agent's branch trigger `ci`.** If they do not, a PR
-   never shows red checks, and the rework path above cannot fire.
+3. **One unexplained observation about `ci` on agent branches.** `ci.yaml` is `on: push:`
+   with no branch filter, and the agent pushes under the Claude App installation token
+   (`agent.yaml` supplies no `github_token:` override), which unlike the default
+   `GITHUB_TOKEN` *does* start workflow runs — so `ci` should run on every agent branch.
+   Against that, the spec agent reported on PR #5 that "the `ci` workflow never triggered on
+   the branch". One of the two is wrong and it has not been run to ground. It matters because
+   the rework path needs a PR to show red checks.
+4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
+   only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
+   `Edit`/`Write` there are not denied. Nothing has done so, and the role files forbid it, but
+   the enforcement is weaker than the design assumes.
