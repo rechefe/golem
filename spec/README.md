@@ -9,6 +9,7 @@ checks against it; nothing here is inferred from the RTL.
 |---------------|------------------------------------------------|
 | `uart_tx.md`  | UART transmitter (Hardcaml gate block)         |
 | `top.md`      | Tiny Tapeout top-level pin mapping             |
+| `workloads/`  | Workload study: the five protocols as pseudo-assembly. **Proposal for the owner, not requirements** — see `workloads/README.md`. |
 
 ## Conventions
 
