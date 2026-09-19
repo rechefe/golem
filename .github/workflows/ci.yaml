@@ -1,9 +1,32 @@
 # Design CI: Hardcaml build and unit tests, generated-Verilog freshness, cocotb, formal.
 # Job names (rtl, sim, formal) are the required status checks on main.
+#
+# `pull_request` is what puts these checks on an agent's PR. `agent.yaml` checks out with no
+# `token:` and no `persist-credentials: false`, so checkout persists the default GITHUB_TOKEN
+# as git's credential and every push an agent makes goes out under it. GitHub starts no
+# workflow run for a `push` event that token triggers, which is why `on: push:` left agent
+# branches with no checks at all: the spec agent's three pushes to `spec/3-workload-study`
+# produced no push run of any workflow -- `docs` and `gds` were `on: push:` in that branch's
+# own copy and did not run either. `pull_request` runs *were* created from those same pushes
+# (runs 35442657728 on 60c2d7b and 35442734516 on cd0efa4, 8 s and 5 s after the push), so
+# these jobs run on `opened` and refresh on each `synchronize`. Why one push starts a
+# `pull_request` run and no `push` run is not settled -- see gap 3 in agents/README.md.
+#
+# `pull_request` is unfiltered, unlike gds.yaml and docs.yaml, because `branches:` filters the
+# *base*: these are the cheap checks, and every PR should get them whatever it targets. `push`
+# is `main` only, so a PR does not run the same jobs twice. That leaves a direct push to
+# `spec-provisional` -- the spec agent's clarification path, which opens no PR -- with no ci.
+# That branch carries `spec/` prose, which no job here reads, and an agent's push to it never
+# started a run under `on: push:` either, so this narrows nothing that worked.
+#
+# The jobs read no secrets and take `contents: read`, so running pull-request code on
+# `pull_request` (not `pull_request_target`) is safe.
 name: ci
 
 on:
+  pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
