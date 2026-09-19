@@ -16,7 +16,7 @@ not this one.
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only write permission among the build and harden workflows — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
+| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
@@ -97,11 +97,10 @@ gap 6.
 
 ```mermaid
 flowchart TD
-    a["1. Budget: count agent runs in the last 24h"] --> b{"at AGENT_RUNS_PER_DAY?"}
-    b -->|yes| c["skip dispatch and rework"]
-    b -->|no| d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
-    c --> d
-    d --> e["3. Rework: status:running with a red PR or request_changes, re-add agent:ROLE"]
+    a["1. Budget: count agent runs in the last 24h"] --> d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
+    d --> b{"at AGENT_RUNS_PER_DAY?"}
+    b -->|"yes — skip steps 3 and 4"| g
+    b -->|no| e["3. Rework: status:running with a red PR or request_changes, re-add agent:ROLE"]
     e --> f["4. Dispatch: status:ready, oldest milestone first, one issue per role"]
     f --> g["5. Plan ahead: file missing issues from PLAN.md and merged spec only"]
     g --> h["6. Spec batch: keep one PR open from spec-provisional to main"]
@@ -270,7 +269,7 @@ Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier`
 and escalate to Opus on their third attempt.
 
 CI is paced too. `ci` runs on every push, but `gds` — hardening plus precheck, about an hour
-on a 6x4 die — runs only on PRs to `main`, on `main`, and nightly.
+on a 6x4 die — runs only on PRs to `main`, on `main`, nightly, and on manual `workflow_dispatch`.
 
 ## Watching a run
 
@@ -290,7 +289,8 @@ the Claude web or mobile interface; there is no setting that changes this. What 
 ## Known gaps, as of 2026-09-19
 
 Recorded because the machinery above describes the intent, and these are places the
-implementation does not yet meet it. Check open issues before trusting this list.
+implementation does not yet meet it. None has a tracking issue yet, so check this file's
+git history and the open issues before trusting it.
 
 1. **A successful run that produces no PR strands its issue.** `agent.yaml` resets
    `status:running` to `status:ready` only when the run *fails*, and the orchestrator's rework
