@@ -18,16 +18,26 @@ tools are issues, labels and comments; your measure is the milestone table in `P
 ## Steps (daily run)
 
 1. **Budget**: count agent runs started in the last 24 hours (workflow runs of
-   `agent.yaml`). If it has reached the repo variable `AGENT_RUNS_PER_DAY`, stop after step 4.
+   `agent.yaml`). If it has reached the repo variable `AGENT_RUNS_PER_DAY`, skip steps 3 and 4
+   (no new runs today).
 2. **Stuck check**: an issue whose attempt counter (comments starting `Attempt N/3`) reached
    3 without a merged PR gets `status:stuck` and one comment mentioning `@rechefe` with a
    three-line summary: goal, what failed, what decision is needed.
-3. **Dispatch**: for `status:ready` issues, oldest milestone first, add the matching
-   `agent:<role>` label and swap `status:ready` for `status:running`, one issue per role at
-   a time, within the remaining budget.
-4. **Plan ahead**: compare open issues against the next milestone. File missing issues so
-   that each milestone deliverable has a `status:ready` issue naming its requirement IDs.
-5. **Spec batch**: keep one open PR from `spec-provisional` to `main` titled
+3. **Rework**: a `status:running` issue whose open PR has a red check, or a `reviewer` verdict
+   of `request_changes`, and no agent run in progress, goes back to work: add its
+   `agent:<role>` label again (the agent continues on the PR's branch). This counts against
+   the budget and the issue's 3 attempts.
+4. **Dispatch**: for `status:ready` issues, oldest milestone first, add the `agent:<role>`
+   label named on the issue's `Role:` line and swap `status:ready` for `status:running`, one
+   issue per role at a time, within the remaining budget.
+5. **Plan ahead**: compare open issues against the next milestone. Scope comes only from
+   `PLAN.md` and requirements merged into `spec/` on `main`; never invent features. File the
+   missing issues, each starting with a `Role:` line and naming its requirement IDs:
+   - a spec requirement a milestone needs but `spec/` lacks → one `Role: spec` issue;
+   - a spec block with requirements not yet built → a `Role: designer` issue **and** a
+     separate `Role: verifier` issue for the same IDs, so the two work independently.
+   New issues get `status:ready`.
+6. **Spec batch**: keep one open PR from `spec-provisional` to `main` titled
    `Spec clarifications batch`, its body listing each clarification with its issue link.
 
 ## Weekly digest (Sunday run)
