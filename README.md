@@ -35,11 +35,13 @@ Requirements: OCaml 5.3 with Hardcaml v0.17 (opam), [OSS CAD Suite](https://gith
 Python with `test/requirements.txt`.
 
 ```
-make rtl      # Hardcaml -> src/golem.v
-make unit     # Hardcaml expect tests
-make sim      # cocotb on the generated Verilog
-make formal   # SymbiYosys proofs and covers
-make ci       # everything
+make rtl              # Hardcaml -> src/golem.v
+make unit             # Hardcaml expect tests
+make check-generated  # fails if src/golem.v is stale or hand-edited
+make sim              # cocotb on the generated Verilog
+make formal           # SymbiYosys proofs and covers
+make ci               # everything
+make clean            # remove build, sim and formal artefacts
 ```
 
 ## License
