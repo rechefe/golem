@@ -26,12 +26,20 @@ speed limit. Model, to be confirmed by the designer (`Q-004`):
   register).
 - `L_in` = 2 cycles — a pad value during cycle *c* is readable by `IN` at cycle *c+2*
   (two-stage metastability synchroniser).
-- `L_rt` = `L_out + L_in` = **3 cycles**, before the slave's own clock-to-out.
+- `L_rt` = `L_out + L_in` = **3 cycles**, which is *our* half of the trip only.
+- `t_co` — the slave's clock-to-out, its own and not ours. It is never zero, so the programs
+  below budget **one whole clock cycle** (20.8 ns at 48 MHz) for it. A slave slower than that
+  needs a longer bit period, not a different program.
 
-So the `IN` that captures the slave's response to an SCK rising edge driven at cycle *c* must
-execute no earlier than cycle *c+3*. In mode 0 the slave holds each bit from one falling edge to
-the next, so the sampling *window* is a whole SCK period wide; the constraint is that the bit
-period must be long enough for the 3-cycle shift to still land inside the right bit's window.
+In mode 0 the slave changes MISO on the **falling** edge of SCK and holds it until the next
+falling edge, so the driving event for the bit sampled at rising edge *n* is falling edge *n*,
+and the sampling window is a whole SCK period wide. Put together: if the falling edge is driven
+at cycle *c*, the pad falls at *c+1*, the slave's bit is stable from *c+1+t_co*, and the `IN`
+that reads it must execute no earlier than cycle *c + L_out + t_co + L_in* = **c+4**.
+
+That 4 is the number the single-sequencer program has to hide inside one bit period. It does
+**not** cap SCK in general — it caps SCK for a loop that must contain the whole round trip. The
+two faster variants below both break the round trip out of the loop.
 
 ## Program: SPI master, mode 0
 
@@ -45,16 +53,21 @@ spi_word:
     set   x, 7         side 0         ; 8 bits
     set   pins, 0      side 0  [1]    ; CSn low; tCSS
 spi_bit:
-    out   pins, 1      side 0  [1]    ; cycles 0-1: MOSI <- bit n, SCK low
-    nop                side 1         ; cycle 2:    SCK rises
-    in    pins, 1      side 1         ; cycle 3:    sample MISO = bit n  (L_rt = 3)
-    jmp   x--, spi_bit side 1         ; cycle 4:    SCK high
+    out   pins, 1      side 0  [2]    ; cycles 0-2: MOSI <- bit n, SCK driven low
+    nop                side 1         ; cycle 3:    SCK driven high
+    in    pins, 1      side 1         ; cycle 4:    reads the pad from cycle 2 = bit n
+    jmp   x--, spi_bit side 1         ; cycle 5:    SCK high
     push  block        side 0         ; received word -> RX FIFO
     set   pins, 1      side 0         ; CSn high
     jmp   spi_word     side 0
 ```
 
-9 instruction words. **5 cycles per bit → SCK = 10 MHz at 48 MHz** (low 2 cycles, high 3).
+10 instruction words. **6 cycles per bit → SCK = 8 MHz at 48 MHz** (low 3 cycles, high 3).
+
+**Why cycle 4 and not cycle 3.** SCK is driven low at cycle 0, so the pad falls into cycle 1 and
+the slave's bit n is stable from cycle 1 + `t_co`. `IN` at cycle 4 reads the pad as it was at
+cycle 2, which allows `t_co` up to one whole clock cycle. `IN` at cycle 3 would read the pad at
+cycle 1 — the falling edge itself — and so would require `t_co` = 0.
 
 Multi-word transfers with CS held low need the transfer length in the program, which means
 pulling a header word into a counter — see `GAP-SPI-003`.
@@ -63,36 +76,55 @@ pulling a header word into a counter — see `GAP-SPI-003`.
 
 | Variant                                                  | Cycles/bit | SCK @48 MHz |
 |----------------------------------------------------------|------------|-------------|
-| As listed, one sequencer                                  | 5          | 10 MHz      |
-| One-stage synchroniser on the MISO group (`L_rt` = 2)     | 4          | 12 MHz      |
-| TX and RX split across two sequencers, RX started 3 cycles later | 2   | 24 MHz      |
+| As listed, one sequencer, sample aligned with the word    | 6          | 8 MHz       |
+| One-stage synchroniser on the MISO group (`L_in` = 1)     | 5          | 9.6 MHz     |
+| Pipelined: each `IN` samples bit *n-1*, one extra shift   | 4          | 12 MHz      |
+| TX and RX split across two sequencers, RX started 4 cycles later | 2   | 24 MHz      |
 
-The split variant is worth spelling out, because it is the first evidence that "sequencer count
-is a parameter" buys throughput and not just more protocols:
+The **pipelined** variant drops the `nop` and lets `IN` sample the *previous* bit, which has been
+stable on the pad for a whole SCK period:
 
 ```
-; sequencer A (drive)                    ; sequencer B (sample), released 3 cycles later
+spi_bit:
+    out   pins, 1      side 0  [1]    ; cycles 0-1: MOSI <- bit n, SCK driven low
+    in    pins, 1      side 1         ; cycle 2:    reads the pad from cycle 0 = bit n-1
+    jmp   x--, spi_bit side 1         ; cycle 3
+```
+
+The round trip is still 4 cycles; it now straddles a loop iteration instead of fitting inside
+one. The price is that the ISR runs one bit behind the OSR, so the loop takes one extra
+iteration (`set x, 8`): the host pads the transmitted word by one bit and discards the first
+bit received. That is the same trade the RP2040 PIO's SPI makes, and it is the honest ceiling
+for a single sequencer: **12 MHz**.
+
+The **split** variant is worth spelling out, because it is the first evidence that "sequencer
+count is a parameter" buys throughput and not just more protocols:
+
+```
+; sequencer A (drive)                    ; sequencer B (sample), released 4 cycles later
 a_bit:                                   b_bit:
-    out pins, 1   side 0                     nop
-    jmp !osre, a_bit side 1                  in  pins, 1
-                                             jmp x--, b_bit    ; 2 cycles, aligned to A's SCK
+    out pins, 1      side 0                  in  pins, 1
+    jmp !osre, a_bit side 1                  jmp x--, b_bit   ; 2 cycles, locked to A's SCK
 ```
 
-B must start exactly `L_rt` cycles after A and stay locked to it for the whole word. `IRQ` gives
-the handoff but not the sub-cycle alignment; a "start together with offset *k*" mechanism is
-listed as `Q-005` rather than proposed, because only SPI wants it so far.
+B must start exactly `L_rt + t_co` = 4 cycles after A and stay locked to it for the whole word.
+`IRQ` gives the handoff but not the sub-cycle alignment; a "start together with offset *k*"
+mechanism is listed as `Q-005` rather than proposed, because only SPI wants it so far.
 
 ## Tightest timing deadline
 
 SPI imposes no response deadline on the master — it owns the clock and can stop it between any
 two bits. The tight number is internal:
 
-> **MISO round trip: 3 clock cycles (62.5 ns at 48 MHz) between driving SCK high and being able
-> to read the answer.**
+> **MISO round trip: 4 clock cycles (83 ns at 48 MHz) from driving the SCK falling edge that
+> makes the slave change MISO to the earliest `IN` that can read the new value** — 3 cycles of
+> our own output register and input synchroniser, plus one cycle budgeted for the slave's
+> clock-to-out.
 
-This is the deadline that decides the maximum SCK, and it is fixed by the pad register and the
-input synchroniser, not by the program. Every workload that reads a pin it has just clocked
-(SPI, SWD, JTAG, I2C's ACK bit) pays it.
+Three of those four cycles are fixed by the pad register and the input synchroniser, not by the
+program; the fourth belongs to the part we do not build. Every workload that reads a pin it has
+just clocked (SPI, SWD, JTAG, I2C's ACK bit) pays it. It caps SCK at 8 MHz only for a loop that
+must contain the whole round trip — 12 MHz pipelined, 24 MHz split across two sequencers.
 
 Slave-side constraints that the program must respect but that are loose at these rates: tCSS
 (CS setup, typically 10 ns = 1 cycle, covered by `[1]` on the `set pins, 0`) and tCSH.
@@ -107,9 +139,9 @@ from the MOSI change, violating mode 0 setup.
 tick, stealing bits from the delay field. → `ISA-SIDE-001`.
 
 **`GAP-SPI-002` — the input round trip is invisible to the program.**
-Nothing in B0 or in the listing above tells the sequencer that `IN` reads a 3-cycle-old pin. The
-program has to be written around it by hand, and the correct offset changes if the designer
-changes the synchroniser depth.
+Nothing in B0 or in the listing above tells the sequencer that `IN` reads a pad value `L_in`
+cycles old. The program has to be written around it by hand, and the correct offset changes if
+the designer changes the synchroniser depth.
 *Proposed*, in order of cost: (a) a per-pin-group configuration field selecting a **1- or
 2-stage synchroniser** (1 stage is defensible for a pin whose source is clocked by our own SCK);
 (b) the split-sequencer variant above. Not proposed: an `OUT`+`IN` fused instruction — it fixes

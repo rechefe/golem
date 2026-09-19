@@ -29,10 +29,17 @@ edge; the target drives on the rising edge and the host samples on the falling e
 ## Tick length
 
 SWCLK is entirely ours, so the tick is a free choice. At 4 ticks per bit (2 low, 2 high) and
-tick = 1 cycle, SWCLK is **12 MHz at 48 MHz**. The ceiling is the same `L_rt` = 3-cycle round
-trip derived in `spi.md`: the host samples a target-driven bit 3 cycles after the rising edge
-that produced it, which at 4 cycles per bit lands one cycle after the falling edge — exactly
-where ADIv5 says to sample.
+tick = 1 cycle, SWCLK is **12 MHz at 48 MHz**. The ceiling is the round trip derived in
+`spi.md`: `L_rt` = 3 cycles of our own output register and input synchroniser, plus the
+target's clock-to-out.
+
+SWD is easier than SPI here, because the target drives on the **rising** edge and holds the bit
+until the next rising edge — a full SWCLK period of window. At 4 cycles per bit the `IN` lands
+one cycle after the SWCLK rise that produced the bit, so the target gets exactly one clock cycle
+(20.8 ns) of clock-to-out. That is earlier in the window than the falling edge ADIv5 recommends;
+a 6-cycle bit (8 MHz) moves the sample onto the falling edge and buys two more cycles. The
+listing below takes the fast option, and `Q-007` records that it has not been checked against a
+real target.
 
 ## Program: SWD read transfer
 
@@ -53,9 +60,10 @@ req_bit:
     set   pindirs, 0    side 0  [1]     ; turnaround: release SWDIO, SWCLK low
     set   x, 2          side 1  [1]     ; SWCLK high: target drives ACK bit 0
 ack_bit:
-    nop                 side 0          ; cycle 0
-    in    pins, 1       side 0          ; cycle 1: sample, 3 cycles after the rise
-    jmp   x--, ack_bit  side 1  [1]     ; cycles 2-3: SWCLK high, next bit
+    nop                 side 0  [1]     ; cycles 0-1: SWCLK low
+    in    pins, 1       side 1          ; cycle 2: SWCLK driven high; reads the pad from cycle 0,
+                                        ;          one cycle after the rise that drove this bit
+    jmp   x--, ack_bit  side 1          ; cycle 3: SWCLK high, next bit
 
     mov   y, isr        side 0          ; ACK in Y                        [GAP-SWD-002]
     set   x, 4          side 0          ; OK = 0b001 LSB-first, left-shifted into ISR = 0b100
@@ -63,12 +71,12 @@ ack_bit:
 
     set   x, 31         side 0          ; 32 data bits
 rd_bit:
-    nop                 side 0
-    in    pins, 1       side 0          ; sample, 3 cycles after the rise
-    jmp   x--, rd_bit   side 1  [1]
-    nop                 side 0
-    in    pins, 1       side 0          ; the target's parity bit         [GAP-SWD-003]
-    nop                 side 1  [1]     ; cycles 2-3: last SWCLK high
+    nop                 side 0  [1]     ; cycles 0-1: SWCLK low
+    in    pins, 1       side 1          ; cycle 2: one cycle after the rise
+    jmp   x--, rd_bit   side 1          ; cycle 3
+    nop                 side 0  [1]     ; cycles 0-1: SWCLK low
+    in    pins, 1       side 1          ; cycle 2: the target's parity bit [GAP-SWD-003]
+    nop                 side 1          ; cycle 3: last SWCLK high
     set   pindirs, 1    side 0  [1]     ; turnaround, host drives again
     jmp   !macflag 0, swd_parity        ; MAC-CRC-001 residue check       [GAP-SWD-003]
     push  block         side 0          ; 32 data bits -> RX FIFO
@@ -89,6 +97,13 @@ parity bit taken from `MAC-CRC-001` instead of checked against it. The exact clo
 both turnarounds must be re-derived against ADIv5 when this becomes a requirement; the listing
 above is sized for the ISA question, not verified against a target (`Q-007`).
 
+**Where each loop's first bit comes from.** Both read loops sample the bit produced by the rise
+in the *preceding* instruction, not by their own `side 1`. `ack_bit`'s first `IN` reads the bit
+the target drove at the turnaround clock's rise (`set x, 2 side 1 [1]`); `rd_bit`'s first `IN`
+reads the bit driven at the rise in the ACK loop's last `jmp`, four instructions earlier, which
+is why the three `side 0` instructions between the two loops cost nothing. Every later `IN` in
+either loop has the one-cycle clock-to-out margin described under *Tick length*.
+
 **ACK decode.** The ISR shifts left, so the three LSB-first ACK bits land reversed in
 `ISR[2:0]`: `OK` (`ACK[0] = 1`) reads as `0b100 = 4`, `WAIT` as `0b010 = 2`, `FAULT` as
 `0b001 = 1`. Comparing against a 5-bit `SET` immediate works, but the reversal is exactly the
@@ -104,8 +119,9 @@ most forgiving of the five workloads.
 
 The numbers that do bind:
 
-> **SWDIO read round trip: 3 clock cycles (62.5 ns at 48 MHz)** — the same `L_rt` as SPI, and
-> the reason SWCLK tops out near 12 MHz for a single sequencer.
+> **SWDIO read round trip: 4 clock cycles (83 ns at 48 MHz)** — the same figure as SPI: `L_rt`
+> = 3 of our own plus one cycle budgeted for the target's clock-to-out. It is the reason SWCLK
+> tops out at 12 MHz for a single sequencer, and at 12 MHz it is met with no margin to spare.
 
 > **Turnaround: the host must stop driving SWDIO within one SWCLK period** of the park bit, and
 > must resume within one period after the read's trailing turnaround. At 4 ticks per bit this

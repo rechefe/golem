@@ -166,7 +166,7 @@ rx_bad:
     jmp   rx_packet
 ```
 
-9 instruction words. Address and endpoint filtering for tokens is an `out x, 7` of the received
+10 instruction words. Address and endpoint filtering for tokens is an `out x, 7` of the received
 address followed by `jmp x!=y` against the assigned address held in `Y` — three more
 instructions, comfortably inside the deadline computed below.
 

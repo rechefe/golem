@@ -77,7 +77,7 @@ rx_good:
     jmp   rx_loop                 ; tick 78
 ```
 
-8 instruction words.
+9 instruction words.
 
 **Sample alignment.** Tick 0 is the tick at which `WAIT` observes RX low. Bit *k* is sampled at
 tick `12 + 8k`, i.e. at `1.5 + k` bit times after the edge — the centre of each data bit. The

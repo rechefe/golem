@@ -27,8 +27,8 @@ because the CRC residue check is a one-tick branch on a hardware flag.
 |----------|-------------------|-----------|------------|
 | **USB LS** | response 2–7.5 bit times after EOP | **64–240 cycles** | USB 2.0 §7.1.18 |
 | UART RX  | epilogue after the stop-bit sample < 0.5 bit time | 8 cycles @3 Mbaud (3 of 4 ticks used) | back-to-back frames |
-| SPI      | MISO round trip before the sample | 3 cycles (fixed) | our own pad + synchroniser |
-| SWD      | SWDIO round trip; turnaround < 1 SWCLK period | 3 cycles (fixed) | our own pad + synchroniser |
+| SPI      | MISO round trip before the sample | 4 cycles (3 ours + 1 for the slave) | our own pad + synchroniser + the slave |
+| SWD      | SWDIO round trip; turnaround < 1 SWCLK period | 4 cycles (3 ours + 1 for the target) | our own pad + synchroniser + the target |
 | I2C      | `tVD;DAT` ≤ 0.9 µs; stretch wait unbounded | 43 cycles; ∞ | UM10204 |
 
 USB is the only workload with a deadline the *bus* imposes. SPI and SWD own their clocks; I2C
@@ -143,12 +143,12 @@ and with `MAC-TMR-001` (which counts *real* time) is `Q-009`.
 | Program  | Words | Sequencers |
 |----------|-------|------------|
 | UART TX  | 7     | 1 |
-| UART RX  | 8     | 1 |
-| SPI master | 9   | 1 (2 for the 24 MHz split variant) |
+| UART RX  | 9     | 1 |
+| SPI master | 10  | 1 (2 for the 24 MHz split variant) |
 | I2C master | 20  | 1 |
 | SWD read | 28    | 1 |
 | USB LS TX | 24   | 1 |
-| USB LS RX | 9    | 1 |
+| USB LS RX | 10   | 1 |
 
 **32 instruction words per sequencer** covers every program and matches the 5-bit `JMP` address,
 but only just: SWD is 28 words and a write transfer will be longer still, so 32 is a ceiling the
@@ -203,13 +203,16 @@ but the count is a spec-visible parameter.
 doubles the unit. Tier "could" in PLAN.md, deadline 2027-01-18.
 
 **`Q-004` — what is the real pad-to-`IN` latency?**
-The studies assume `L_out` = 1 cycle and `L_in` = 2 cycles, so `L_rt` = 3. This number sets the
-maximum SCK and SWCLK directly (10 MHz at `L_rt` = 3, 12 MHz at 2) and appears in three of the
-five programs. Only the designer can confirm it, and it should become a spec constant once
-known.
+The studies assume `L_out` = 1 cycle and `L_in` = 2 cycles, so our half of the round trip is
+`L_rt` = 3 cycles; the far end's clock-to-out is budgeted at one more, giving 4. This sets the
+maximum SCK and SWCLK for a loop that must contain the whole trip (8 MHz at 4 cycles, 9.6 MHz if
+`L_in` drops to 1) and appears in three of the five programs. Breaking the trip out of the loop
+lifts the ceiling to 12 MHz pipelined and 24 MHz split across two sequencers, so the answer is
+not a hard limit on throughput — but it is a spec constant the designer must confirm, because
+every listing's `IN` placement is derived from it.
 
 **`Q-005` — do two sequencers need to start with a fixed sub-word offset?**
-`spi.md`'s 24 MHz split variant needs sequencer B released exactly `L_rt` cycles after A. `IRQ`
+`spi.md`'s 24 MHz split variant needs sequencer B released exactly 4 cycles after A. `IRQ`
 gives the handoff but not the alignment. Only SPI wants it, and only for the fast variant;
 recorded rather than proposed.
 
