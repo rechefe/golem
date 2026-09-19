@@ -5,6 +5,13 @@
 #    pr-head/ as read-only material and nothing from it is executed.
 #  - Claude gets read tools and `gh pr` read/comment commands only; no general shell.
 #  - PRs from forks never reach Claude: the check fails and the owner decides.
+#  - `github_token` is the job's own scoped token, NOT the Claude GitHub App. Anthropic's
+#    OIDC app-token exchange returns 401 for a `pull_request_target` run (it succeeds for
+#    the `issues`-triggered agent workflow with the same secret and environment), which is
+#    a defensible refusal: that trigger runs with this repo's secrets. Supplying a token
+#    makes the action skip the exchange. Safe here because the fork check above means we
+#    only ever review branches from inside this repo. Cost: reviews post as
+#    `github-actions[bot]` rather than `claude[bot]`.
 #
 # Visibility: `display_report: true` puts the review report in the job's Step Summary.
 # `track_progress` is not available here at all -- it throws on `pull_request_target`.
@@ -53,6 +60,7 @@ jobs:
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: claude
           display_report: true
           prompt: |
