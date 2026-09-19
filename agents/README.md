@@ -16,9 +16,9 @@ not this one.
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. |
+| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only write permission outside the three agent workflows — skipped on `pull_request` so a PR cannot publish over `main`'s. |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
-| `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | Nexys Video bitstream. Never wired into the agent loop. |
+| `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
 There are **five agent roles** carried by **three** workflows: `orchestrator.yaml`,
 `reviewer.yaml`, and `agent.yaml` — which runs `spec`, `designer` and `verifier`, differing
@@ -88,7 +88,8 @@ stateDiagram-v2
 
 Adding `agent:<role>` is the only thing that starts work. `status:*` labels are bookkeeping —
 adding one fires `agent.yaml` too, but its guard rejects anything not starting with `agent:`,
-so the run ends as `skipped`.
+so the run ends as `skipped` — though it still appears in the run list the budget counts. See
+gap 6.
 
 ## Inside the orchestrator's daily run
 
@@ -146,7 +147,7 @@ click-through link to the live run. That comment is also the attempt counter —
 counts them to decide when to give up.
 
 Note the asymmetry on the last two branches: a **failed** run resets the issue to
-`status:ready`, but nothing ever clears `status:running`. No workflow reacts to a merge, so an
+`status:ready` and so does the stuck path, but nothing clears `status:running` on **success**. No workflow reacts to a merge, so an
 issue closed by its PR's `Closes #<issue>` stays closed *and* labelled `status:running`
 forever. Harmless — the orchestrator's invariant is scoped to open issues — but it is the same
 asymmetry as gap 1, in its benign form.
@@ -213,7 +214,7 @@ flowchart TD
 ```
 
 `pull_request_target` runs with **this repository's secrets**, which is exactly why the layout
-matters. The workspace root is `main` — so `CLAUDE.md` and `agents/` are the trusted copies,
+matters. The workspace root is the PR's **base** branch — `main` for every PR here, since the checkout takes no `ref:` — so `CLAUDE.md` and `agents/` are the trusted copies,
 not versions a PR could have edited. The PR's own files land in `pr-head/` and are read as
 data; nothing in them is ever executed. Fork PRs never reach Claude at all.
 
@@ -310,3 +311,14 @@ implementation does not yet meet it. Check open issues before trusting this list
    Verilog and the Read tool reaches all of it — `verifier.md` asks for module headers only,
    and nothing enforces that. Nothing has broken these rules, and the role files forbid it,
    but the enforcement is weaker than the design assumes.
+5. **`fpga.yaml` builds a bitstream for a board this project does not use.** It is the stock
+   Tiny Tapeout template targeting an iCE40UP5K on the TT ASIC Sim board, while `PLAN.md`
+   names the Nexys Video (Artix-7 200T) as the FPGA target and says it is run by hand and
+   never wired to CI. The two are consistent, but together they mean nothing in this
+   repository builds the bitstream behind the submission package's FPGA video.
+6. **A dispatch costs two runs against the budget, not one.** The orchestrator counts "workflow
+   runs of `agent.yaml`", and a run the guard rejects still *is* a run. Dispatch adds two
+   labels — `agent:<role>` and `status:running` — so each one produces a real run and a skipped
+   one. Observed on 2026-09-19: issue #8's dispatch at 12:13:22 produced runs `35442244471`
+   (success) and `35442244449` (skipped). `AGENT_RUNS_PER_DAY = 6` therefore buys about three
+   dispatches a day, not six.
