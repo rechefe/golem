@@ -1,42 +1,47 @@
-![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
+# Golem
 
-# Tiny Tapeout Verilog Project Template
+**Clay until you write the word.** Golem is a reprogrammable protocol-emulator ASIC: silicon
+that becomes a UART, an SPI or I2C bus, a JTAG/SWD probe or a USB low-speed device, depending
+on the program you load into it. Built for the
+[Jane Street protocol emulator ASIC competition](https://blog.janestreet.com/protocol-emulator-asic-competition/)
+on IHP 130nm CMOS5L via [Tiny Tapeout](https://tinytapeout.com), 6x4 tiles.
 
-- [Read the documentation for project](docs/info.md)
+In Jewish folklore a golem is shaped from clay and animated by a word written on it:
+**אמת**, *emet*, "truth". Our verification layer carries that name. Every behaviour in the
+spec is a requirement with an ID, every requirement is a property, and every property is
+proven against the RTL.
 
-## What is Tiny Tapeout?
+## How it's built
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+- **Spec first.** `spec/` is the micro-architecture specification: numbered requirements with
+  cycle-exact acceptance criteria.
+- **RTL in [Hardcaml](https://github.com/janestreet/hardcaml)** (`rtl/`), generated to Verilog
+  in `src/`.
+- **Independent verification.** `formal/` holds SymbiYosys proofs and `test/` cocotb tests,
+  written from the spec without reading the RTL.
+- **Built by agents.** A spec agent, a designer, a verifier and a reviewer work from GitHub
+  issues, in separate contexts, each in its own lane. The owner approves spec changes and
+  steps in when something is stuck. Roles are in `agents/`, the plan in `PLAN.md`.
 
-To learn more and get started, visit https://tinytapeout.com.
+## Status
 
-## Set up your Verilog project
+Gate build: an 8N1 UART transmitter, proven unbounded against `spec/uart_tx.md` and hardened
+through the Tiny Tapeout flow. Next milestone: MAS v1 and the emet property language
+(2026-10-10). Full milestones are in `PLAN.md`.
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+## Build
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+Requirements: OCaml 5.3 with Hardcaml v0.17 (opam), [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build),
+Python with `test/requirements.txt`.
 
-## Enable GitHub actions to build the results page
+```
+make rtl      # Hardcaml -> src/golem.v
+make unit     # Hardcaml expect tests
+make sim      # cocotb on the generated Verilog
+make formal   # SymbiYosys proofs and covers
+make ci       # everything
+```
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+## License
 
-## Resources
-
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
-
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+Apache-2.0

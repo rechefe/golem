@@ -1,0 +1,24 @@
+# SymbiYosys job for golem_uart_tx against spec/uart_tx.md.
+#   prove: unbounded proof of every assertion (PDR, no depth limit)
+#   cover: every COVER_* is reachable, so no assertion holds vacuously
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+cover: mode cover
+cover: depth 40
+
+[engines]
+prove: abc pdr
+cover: smtbmc boolector
+
+[script]
+read -formal golem.v
+read -formal uart_tx_props.v
+prep -top uart_tx_formal
+
+[files]
+../src/golem.v
+uart_tx_props.v

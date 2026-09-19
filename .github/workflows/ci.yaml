@@ -1,0 +1,85 @@
+# Design CI: Hardcaml build and unit tests, generated-Verilog freshness, cocotb, formal.
+# Job names (rtl, sim, formal) are the required status checks on main.
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rtl:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3.9.0
+        with:
+          ocaml-compiler: "5.3"
+          dune-cache: true
+
+      - name: Install Hardcaml
+        run: opam install -y dune hardcaml.v0.17.1 hardcaml_waveterm ppx_hardcaml ppx_expect ppx_jane
+
+      - name: Build and regenerate Verilog
+        run: opam exec -- make rtl
+
+      - name: Unit tests (expect tests)
+        run: opam exec -- make unit
+
+      - name: Generated Verilog is up to date
+        run: opam exec -- make check-generated
+
+  sim:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Icarus Verilog
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install cocotb
+        run: pip install -r test/requirements.txt
+
+      - name: cocotb tests
+        run: make sim
+
+      - name: Upload waveforms and results
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sim-results
+          path: |
+            test/tb.fst
+            test/results.xml
+
+  formal:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install OSS CAD Suite (Yosys, SymbiYosys, solvers)
+        uses: YosysHQ/setup-oss-cad-suite@c7845bc0d335c8076aa22047e85972caa8a916df # v4.1.0
+
+      - name: SymbiYosys (prove + cover)
+        run: make formal
+
+      - name: Upload counterexamples and cover traces
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formal-traces
+          path: |
+            formal/*/engine_*/*.vcd
+            formal/*/logfile.txt

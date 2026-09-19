@@ -1,0 +1,5 @@
+(executable
+ (name generate)
+ (libraries core core_unix.command_unix hardcaml golem)
+ (preprocess
+  (pps ppx_jane)))

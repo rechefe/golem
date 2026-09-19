@@ -1,0 +1,38 @@
+# One-time (idempotent) repo setup: labels and the spec-provisional branch.
+# Run it from the Actions tab after the bootstrap PR merges.
+name: setup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mk() { gh label create "$1" -R "$GITHUB_REPOSITORY" --color "$2" --description "$3" --force; }
+          mk agent:spec       5319e7 "Dispatch the spec agent"
+          mk agent:designer   1d76db "Dispatch the designer agent"
+          mk agent:verifier   0e8a16 "Dispatch the verifier agent"
+          mk status:ready     c2e0c6 "Specified, waiting for dispatch"
+          mk status:running   fbca04 "An agent is working on it"
+          mk status:stuck     b60205 "3 failed attempts: owner decision needed"
+          mk spec:behaviour   d93f0b "Spec change that waits for the owner"
+
+      - name: spec-provisional branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/branches/spec-provisional" >/dev/null 2>&1; then
+            echo "spec-provisional exists"
+          else
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/spec-provisional -f sha="$sha"
+          fi
