@@ -1,9 +1,18 @@
 # Design CI: Hardcaml build and unit tests, generated-Verilog freshness, cocotb, formal.
 # Job names (rtl, sim, formal) are the required status checks on main.
+#
+# `pull_request` is what makes these checks appear on an agent's PR. A push made with the
+# default GITHUB_TOKEN does not start a workflow run, so a `push`-only trigger can leave an
+# agent's branch with no checks at all -- and the orchestrator's rework step has nothing to
+# react to, because it looks for a PR with a red check. Running on the pull request instead
+# of the branch push is independent of which token pushed. `push` is kept for `main` only, so
+# a PR does not run the same jobs twice.
 name: ci
 
 on:
+  pull_request:
   push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:

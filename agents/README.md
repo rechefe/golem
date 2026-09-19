@@ -15,7 +15,7 @@ not this one.
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
-| `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
+| `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
 | `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
@@ -268,8 +268,9 @@ counts `agent.yaml` runs in the last 24 hours against the repository variable
 Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier` run on Sonnet
 and escalate to Opus on their third attempt.
 
-CI is paced too. `ci` runs on every push, but `gds` — hardening plus precheck, about an hour
-on a 6x4 die — runs only on PRs to `main`, on `main`, nightly, and on manual `workflow_dispatch`.
+CI is paced too. `ci` runs on every pull request and on `main`, but `gds` — hardening plus
+precheck, about an hour on a 6x4 die — runs only on PRs to `main`, on `main`, nightly, and on
+manual `workflow_dispatch`.
 
 ## Watching a run
 
@@ -303,13 +304,15 @@ git history and the open issues before trusting it.
    `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
    `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
    agents return no structured outcome.
-3. **One unexplained observation about `ci` on agent branches.** `ci.yaml` is `on: push:`
-   with no branch filter, and the agent pushes under the Claude App installation token
-   (`agent.yaml` supplies no `github_token:` override), which unlike the default
-   `GITHUB_TOKEN` *does* start workflow runs — so `ci` should run on every agent branch.
-   Against that, the spec agent reported on PR #5 that "the `ci` workflow never triggered on
-   the branch". One of the two is wrong and it has not been run to ground. It matters because
-   the rework path needs a PR to show red checks.
+3. **Why `ci` did not run on the first agent branch is still unexplained**, though it no
+   longer blocks anything. The spec agent reported on issue #3 that "`ci` has never run on
+   this branch across either attempt", and gave a cause: "GitHub suppresses workflow runs for
+   pushes made with the default token, so no agent push can ever trigger it". Against that,
+   `agent.yaml` supplies no `github_token:` override, so its pushes use the Claude App
+   installation token, which is *not* the default `GITHUB_TOKEN` and does start runs — and
+   `docs` and `gds` did produce `pull_request` runs on that same branch. The two accounts have
+   not been reconciled. `ci.yaml` now also triggers on `pull_request`, which is independent of
+   which token pushed, so the rework path gets its red checks either way.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
    `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
