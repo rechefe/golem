@@ -41,6 +41,7 @@ make check-generated  # fails if src/golem.v is stale or hand-edited
 make sim              # cocotb on the generated Verilog
 make formal           # SymbiYosys proofs and covers
 make ci               # everything
+make clean            # remove build, sim and formal artefacts
 ```
 
 ## License
