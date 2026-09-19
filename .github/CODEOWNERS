@@ -1,0 +1,7 @@
+# Changes to these paths on main need the owner's approval (ruleset: require Code Owners review).
+# spec/ carries the behaviour-change gate; the rest are the agents' own rules and CI.
+/spec/        @rechefe
+/agents/      @rechefe
+/.github/     @rechefe
+/PLAN.md      @rechefe
+/CLAUDE.md    @rechefe

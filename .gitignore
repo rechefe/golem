@@ -11,3 +11,10 @@ test/sim_build
 test/__pycache__/
 test/results.xml
 test/gate_level_netlist.v
+# OCaml / dune
+rtl/_build
+_opam
+# SymbiYosys run directories (one per job/task)
+formal/*/
+# cocotb
+test/output

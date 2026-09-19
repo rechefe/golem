@@ -1,0 +1,158 @@
+# Worker agents (spec / designer / verifier).
+# Started by adding the label `agent:<role>` to an issue, or manually from the Actions tab.
+#
+# Security:
+#  - Runs only when the label was added by an allowed actor AND the issue was written by one,
+#    so text from strangers never becomes a prompt.
+#  - The Claude token lives in the `agents` environment, readable only from `main`.
+#  - claude-code-action re-checks that the actor has write access (bots only via allowed_bots).
+name: agent
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      role:
+        description: Agent role
+        type: choice
+        options: [spec, designer, verifier]
+      issue:
+        description: Issue number
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-issue-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.label.name, 'agent:') &&
+       contains(fromJSON('["rechefe","claude[bot]"]'), github.event.sender.login) &&
+       contains(fromJSON('["rechefe","claude[bot]"]'), github.event.issue.user.login))
+    runs-on: ubuntu-24.04
+    environment: agents
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Resolve role and issue
+        id: ctx
+        env:
+          EVENT: ${{ github.event_name }}
+          LABEL: ${{ github.event.label.name }}
+          IN_ROLE: ${{ inputs.role }}
+          IN_ISSUE: ${{ inputs.issue }}
+          EV_ISSUE: ${{ github.event.issue.number }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then role="$IN_ROLE"; issue="$IN_ISSUE"
+          else role="${LABEL#agent:}"; issue="$EV_ISSUE"; fi
+          case "$role" in spec|designer|verifier) ;; *) echo "unknown role '$role'"; exit 1;; esac
+          echo "role=$role" >> "$GITHUB_OUTPUT"
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+
+      - name: Count attempt (3 per issue, then stuck)
+        id: attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+          ROLE: ${{ steps.ctx.outputs.role }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          prev=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate \
+            --jq '[.[] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | length')
+          n=$((prev + 1))
+          if [ "$n" -gt 3 ]; then
+            gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:stuck --remove-label "agent:$ROLE,status:running" || true
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "@rechefe stuck after 3 attempts. Latest failure: $RUN_URL"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Attempt $n/3: $ROLE agent. Run: $RUN_URL"
+          # Sonnet for volume; after two red attempts, escalate designer/verifier to Opus.
+          if [ "$ROLE" = spec ] || [ "$n" -ge 3 ]; then model=opus; else model=sonnet; fi
+          echo "n=$n" >> "$GITHUB_OUTPUT"
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.attempt.outputs.go == 'true'
+        with:
+          fetch-depth: 0
+
+      - name: Set up OCaml
+        if: steps.attempt.outputs.go == 'true'
+        uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7 # v3.9.0
+        with:
+          ocaml-compiler: "5.3"
+          dune-cache: true
+
+      - name: Install Hardcaml
+        if: steps.attempt.outputs.go == 'true'
+        run: opam install -y dune hardcaml.v0.17.1 hardcaml_waveterm ppx_hardcaml ppx_expect ppx_jane
+
+      - name: Install OSS CAD Suite
+        if: steps.attempt.outputs.go == 'true'
+        uses: YosysHQ/setup-oss-cad-suite@c7845bc0d335c8076aa22047e85972caa8a916df # v4.1.0
+
+      - name: Install cocotb
+        if: steps.attempt.outputs.go == 'true'
+        run: pip install -r test/requirements.txt
+
+      - name: Lane read restrictions
+        if: steps.attempt.outputs.go == 'true'
+        id: lane
+        env:
+          ROLE: ${{ steps.ctx.outputs.role }}
+        run: |
+          case "$ROLE" in
+            designer) deny='"Read(./formal/**)" "Read(./test/**)"' ;;
+            verifier) deny='"Read(./rtl/**)"' ;;
+            *)        deny='' ;;
+          esac
+          echo "deny=$deny" >> "$GITHUB_OUTPUT"
+
+      - name: Run agent
+        if: steps.attempt.outputs.go == 'true'
+        id: claude
+        uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: claude
+          prompt: |
+            You are the ${{ steps.ctx.outputs.role }} agent for ${{ github.repository }}.
+            Read CLAUDE.md, then agents/${{ steps.ctx.outputs.role }}.md, then do the work in
+            issue #${{ steps.ctx.outputs.issue }} (`gh issue view ${{ steps.ctx.outputs.issue }} --comments`).
+            This is attempt ${{ steps.attempt.outputs.n }} of 3. If an open PR for this issue
+            already exists, continue on its branch: fix what its failing CI checks and review
+            comments report.
+            Toolchain: prefix OCaml commands with `opam exec --` (e.g. `opam exec -- make ci`).
+            Finish with a comment on the issue: what you did, the PR link, and anything left open.
+          claude_args: >-
+            --model ${{ steps.attempt.outputs.model }}
+            --max-turns 200
+            --allowedTools "Bash,Read,Edit,Write,Glob,Grep,TodoWrite"
+            ${{ steps.lane.outputs.deny && format('--disallowedTools {0}', steps.lane.outputs.deny) || '' }}
+
+      - name: Release dispatch label
+        if: always() && steps.attempt.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+          ROLE: ${{ steps.ctx.outputs.role }}
+          OK: ${{ steps.claude.outputs.conclusion == 'success' }}
+        run: |
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "agent:$ROLE" || true
+          # A failed run goes back to the queue; a successful one stays running until its PR merges.
+          if [ "$OK" != true ]; then
+            gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label status:running --add-label status:ready || true
+          fi
