@@ -304,15 +304,28 @@ git history and the open issues before trusting it.
    `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
    `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
    agents return no structured outcome.
-3. **Why `ci` did not run on the first agent branch is still unexplained**, though it no
-   longer blocks anything. The spec agent reported on issue #3 that "`ci` has never run on
-   this branch across either attempt", and gave a cause: "GitHub suppresses workflow runs for
-   pushes made with the default token, so no agent push can ever trigger it". Against that,
-   `agent.yaml` supplies no `github_token:` override, so its pushes use the Claude App
-   installation token, which is *not* the default `GITHUB_TOKEN` and does start runs — and
-   `docs` and `gds` did produce `pull_request` runs on that same branch. The two accounts have
-   not been reconciled. `ci.yaml` now also triggers on `pull_request`, which is independent of
-   which token pushed, so the rework path gets its red checks either way.
+3. **An agent's checks arrive when its PR opens and never refresh.** `agent.yaml`'s
+   `actions/checkout` takes no `token:` and no `persist-credentials: false`, so checkout
+   persists the default `GITHUB_TOKEN` as git's credential and **every `git push` an agent
+   makes goes out under it**. GitHub starts no workflow run for an event that token triggers,
+   and only `workflow_dispatch` and `repository_dispatch` are exempt. Opening the PR is a
+   different matter: claude-code-action does that through the Claude App installation token it
+   obtains by OIDC exchange, so the `opened` event is not suppressed.
+
+   That one mechanism explains both halves of what looked like a contradiction on the first
+   agent branch: `ci` was `on: push:` and never ran, while `docs` and `gds` were on
+   `pull_request` and did. The spec agent's report on issue #3 — "`ci` has never run on this
+   branch across either attempt" — was right about pushes, and wrong only about why: it blamed
+   the token the *action* uses for API calls, when the cause is the credential *checkout*
+   leaves behind for git.
+
+   What remains is narrower and still real. A retrying agent is told to continue on the
+   existing PR's branch, and that fix push is a `GITHUB_TOKEN` push, so its `synchronize` event
+   is suppressed and no new run starts. The PR keeps showing the stale result from `opened`,
+   and the orchestrator's step 3 re-dispatches against it — potentially spending attempt 3 on
+   work attempt 2 already fixed. `reviewer.yaml` goes stale the same way. Closing this means
+   giving the agent a push credential that is not `GITHUB_TOKEN`, which is unverified and
+   security-sensitive, so it is recorded here rather than guessed at.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
    `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
