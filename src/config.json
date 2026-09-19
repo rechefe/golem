@@ -19,6 +19,10 @@
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
   "CLOCK_PERIOD": 20,
 
+  "//": "Skip Magic DRC while hardening: on a 6x4 die it runs for hours on CI runners, and for",
+  "//": "IHP CMOS5L the signoff DRC is the KLayout SG13CMOS5L deck run by the precheck job.",
+  "RUN_MAGIC_DRC": 0,
+
   "//": "Hold slack margin - Increase them in case you are getting hold violations.",
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
   "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
