@@ -304,28 +304,48 @@ git history and the open issues before trusting it.
    `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
    `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
    agents return no structured outcome.
-3. **An agent's checks arrive when its PR opens and never refresh.** `agent.yaml`'s
-   `actions/checkout` takes no `token:` and no `persist-credentials: false`, so checkout
-   persists the default `GITHUB_TOKEN` as git's credential and **every `git push` an agent
-   makes goes out under it**. GitHub starts no workflow run for an event that token triggers,
-   and only `workflow_dispatch` and `repository_dispatch` are exempt. Opening the PR is a
-   different matter: claude-code-action does that through the Claude App installation token it
-   obtains by OIDC exchange, so the `opened` event is not suppressed.
+3. **An agent's `git push` starts no workflow run.** `agent.yaml`'s `actions/checkout` takes
+   no `token:` and no `persist-credentials: false`, so checkout persists the default
+   `GITHUB_TOKEN` as git's credential and **every `git push` an agent makes goes out under
+   it**. GitHub starts no workflow run for a `push` event that token triggers, and only
+   `workflow_dispatch` and `repository_dispatch` are exempt. The spec agent named this
+   correctly on issue #3 — "GitHub suppresses workflow runs for pushes made with the default
+   token" — and proposed the fix that PR #16 made: add `pull_request` to `ci.yaml`.
 
-   That one mechanism explains both halves of what looked like a contradiction on the first
-   agent branch: `ci` was `on: push:` and never ran, while `docs` and `gds` were on
-   `pull_request` and did. The spec agent's report on issue #3 — "`ci` has never run on this
-   branch across either attempt" — was right about pushes, and wrong only about why: it blamed
-   the token the *action* uses for API calls, when the cause is the credential *checkout*
-   leaves behind for git.
+   The one agent branch we have is `spec/3-workload-study`. Three agent pushes (`77ece22` at
+   11:16:43, `60c2d7b` at 12:22:01, `cd0efa4` at 12:23:41 on 2026-09-19) and five runs, not
+   one of them a `push`:
 
-   What remains is narrower and still real. A retrying agent is told to continue on the
-   existing PR's branch, and that fix push is a `GITHUB_TOKEN` push, so its `synchronize` event
-   is suppressed and no new run starts. The PR keeps showing the stale result from `opened`,
-   and the orchestrator's step 3 re-dispatches against it — potentially spending attempt 3 on
-   work attempt 2 already fixed. `reviewer.yaml` goes stale the same way. Closing this means
-   giving the agent a push credential that is not `GITHUB_TOKEN`, which is unverified and
-   security-sensitive, so it is recorded here rather than guessed at.
+   | run | workflow | event | head | actor | created |
+   |-----|----------|-------|------|-------|---------|
+   | 35439697977 | `reviewer` | `pull_request_target` | 77ece22 | `claude[bot]` | 11:17:16 |
+   | 35442657728, 35442657679 | `docs`, `gds` | `pull_request` | 60c2d7b | `github-actions[bot]` | 12:22:09 |
+   | 35442734516, 35442734505 | `docs`, `gds` | `pull_request` | cd0efa4 | `github-actions[bot]` | 12:23:46 |
+
+   `ci` never appears because it was `on: push:` only. Neither do `docs` and `gds` as `push`
+   runs, though that branch's own copy of both was `on: push:` — that is the suppression, and
+   it covers every workflow, not just `ci`. The `pull_request` runs at 12:22 and 12:23 use
+   `main`'s copy of those workflows, which a PR run takes from the merge ref; `main` gained
+   their `pull_request` trigger at 11:51, which is why the 11:17 push has no pair.
+
+   Two things follow, and they correct what this section said before the runs were read:
+
+   - **A fix push does refresh the PR's `pull_request` checks.** Those two run pairs were
+     created 8 s and 5 s after the pushes they carry, with `actor: github-actions[bot]` — the
+     pushing identity. So `synchronize` from a `GITHUB_TOKEN` push is not suppressed, and with
+     #16 merged a retrying agent's push re-runs `ci`. The earlier claim here — checks arrive
+     on `opened` and go stale — was wrong.
+   - **Why the halves of one push differ is unexplained.** The same `git push` started a
+     `pull_request` run and no `push` run. Suppression accounts for the second and not the
+     first. Recorded as an observation, not a mechanism; nothing above depends on a reason.
+
+   What is left is the reviewer. `reviewer.yaml` lists `synchronize`, and no `reviewer` run
+   was created for either fix push — only for the `opened` event, which `claude[bot]`
+   triggered and the OIDC 401 then failed. So a `pull_request_target` verdict does go stale
+   across a retry, and the orchestrator's step 3 re-dispatches on `a reviewer verdict of
+   request_changes` that may already be fixed. Closing that means giving the agent a push
+   credential that is not `GITHUB_TOKEN`, which is unverified and security-sensitive, so it is
+   recorded here rather than guessed at.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
    `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
