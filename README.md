@@ -21,7 +21,8 @@ proven against the RTL.
   written from the spec without reading the RTL.
 - **Built by agents.** A spec agent, a designer, a verifier and a reviewer work from GitHub
   issues, in separate contexts, each in its own lane. The owner approves spec changes and
-  steps in when something is stuck. Roles are in `agents/`, the plan in `PLAN.md`.
+  steps in when something is stuck. Roles are in `agents/`, the plan in `PLAN.md`, and
+  [`agents/README.md`](agents/README.md) explains the dispatch machinery with diagrams.
 
 ## Status
 
