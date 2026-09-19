@@ -16,7 +16,7 @@ not this one.
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every push, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only write permission outside the three agent workflows — skipped on `pull_request` so a PR cannot publish over `main`'s. |
+| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only write permission among the build and harden workflows — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
@@ -86,7 +86,9 @@ stateDiagram-v2
 | `agent:spec` / `agent:designer` / `agent:verifier` | Dispatch. Adding it **starts a run**. |
 | `spec:behaviour` | A spec PR that waits for the owner. |
 
-Adding `agent:<role>` is the only thing that starts work. `status:*` labels are bookkeeping —
+On the label path, adding `agent:<role>` is the only thing that starts work — a manual
+`workflow_dispatch` is the other way in, and bypasses the guard entirely; see the trust
+boundary below. `status:*` labels are bookkeeping —
 adding one fires `agent.yaml` too, but its guard rejects anything not starting with `agent:`,
 so the run ends as `skipped` — though it still appears in the run list the budget counts. See
 gap 6.
@@ -147,7 +149,9 @@ click-through link to the live run. That comment is also the attempt counter —
 counts them to decide when to give up.
 
 Note the asymmetry on the last two branches: a **failed** run resets the issue to
-`status:ready` and so does the stuck path, but nothing clears `status:running` on **success**. No workflow reacts to a merge, so an
+`status:ready`, and the stuck path swaps `status:running` for `status:stuck` — never for
+`status:ready`, since re-queueing an issue the workflow has just given up on is what the stuck
+state exists to prevent. But nothing clears `status:running` on **success**. No workflow reacts to a merge, so an
 issue closed by its PR's `Closes #<issue>` stays closed *and* labelled `status:running`
 forever. Harmless — the orchestrator's invariant is scoped to open issues — but it is the same
 asymmetry as gap 1, in its benign form.
@@ -265,7 +269,7 @@ counts `agent.yaml` runs in the last 24 hours against the repository variable
 Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier` run on Sonnet
 and escalate to Opus on their third attempt.
 
-CI is paced too. `ci` runs on every push, but `gds` — hardening plus precheck, tens of minutes
+CI is paced too. `ci` runs on every push, but `gds` — hardening plus precheck, about an hour
 on a 6x4 die — runs only on PRs to `main`, on `main`, and nightly.
 
 ## Watching a run
@@ -294,8 +298,10 @@ implementation does not yet meet it. Check open issues before trusting this list
    leaves the issue marked running forever, with nothing to retry it. The benign variant of
    the same asymmetry: nothing clears `status:running` on a merge either, so closed issues
    keep the label.
-2. **An agent cannot report "this task is impossible" in a way anything notices.** Its role
-   file asks it to comment on the issue; nothing enforces that. Unlike the reviewer, worker
+2. **An agent cannot report "this task is impossible" in a way anything notices.** The
+   instruction to finish with a comment on the issue is in the workflow prompt in
+   `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
+   `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
    agents return no structured outcome.
 3. **One unexplained observation about `ci` on agent branches.** `ci.yaml` is `on: push:`
    with no branch filter, and the agent pushes under the Claude App installation token
