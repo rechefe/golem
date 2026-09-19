@@ -325,16 +325,20 @@ git history and the open issues before trusting it.
    `ci` never appears because it was `on: push:` only. Neither do `docs` and `gds` as `push`
    runs, though that branch's own copy of both was `on: push:` — that is the suppression, and
    it covers every workflow, not just `ci`. The `pull_request` runs at 12:22 and 12:23 use
-   `main`'s copy of those workflows, which a PR run takes from the merge ref; `main` gained
-   their `pull_request` trigger at 11:51, which is why the 11:17 push has no pair.
+   `main`'s copy of those workflows: a PR run takes the file from the merge ref, which carries
+   `main`'s version where the head branch has not also changed it. `main` gained their
+   `pull_request` trigger at 11:51, which is why the 11:17 push has no pair.
 
    Two things follow, and they correct what this section said before the runs were read:
 
-   - **A fix push does refresh the PR's `pull_request` checks.** Those two run pairs were
-     created 8 s and 5 s after the pushes they carry, with `actor: github-actions[bot]` — the
-     pushing identity. So `synchronize` from a `GITHUB_TOKEN` push is not suppressed, and with
-     #16 merged a retrying agent's push re-runs `ci`. The earlier claim here — checks arrive
-     on `opened` and go stale — was wrong.
+   - **A fix push was observed to refresh the PR's `pull_request` checks.** Those two run
+     pairs were created 8 s and 5 s after the pushes they carry, with `actor:
+     github-actions[bot]` — the pushing identity. So `synchronize` from a `GITHUB_TOKEN` push
+     was not suppressed on either. The earlier claim here — checks arrive on `opened` and go
+     stale — was wrong. Take the refresh as observed rather than guaranteed: n is 2, both are
+     `docs`/`gds` runs, `ci` itself has never been seen to run on a `GITHUB_TOKEN`
+     `synchronize`, and the documented rule predicts the opposite. Nothing here rests on it —
+     `opened` alone is already more than `on: push:` gave.
    - **Why the halves of one push differ is unexplained.** The same `git push` started a
      `pull_request` run and no `push` run. Suppression accounts for the second and not the
      first. Recorded as an observation, not a mechanism; nothing above depends on a reason.
@@ -346,6 +350,11 @@ git history and the open issues before trusting it.
    request_changes` that may already be fixed. Closing that means giving the agent a push
    credential that is not `GITHUB_TOKEN`, which is unverified and security-sensitive, so it is
    recorded here rather than guessed at.
+
+   One consequence of #16's other half, recorded here because `ci.yaml` points at this section:
+   with `push` narrowed to `main`, a direct push to `spec-provisional` — the spec agent's
+   clarification path, which opens no PR — gets no `ci`. It loses nothing real, since no
+   `Makefile` target reads `spec/`, and an agent's push there never started a run anyway.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
    `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
