@@ -52,7 +52,7 @@ tools are issues, labels and comments; your measure is the milestone table in `P
    issue per role at a time, within the remaining budget.
 
    A `status:running` issue holds its role's slot. If it holds it while no agent run is in
-   progress and step 3 cannot rework it — because it has no open PR (gap 1), or because its
+   progress and step 4 cannot rework it — because it has no open PR (gap 1), or because its
    open PR is waiting on the owner — say so in one comment on that issue naming what the
    owner has to do, so a parked issue does not silently block every other issue of its role.
 6. **Plan ahead**: compare open issues against the next milestone. Scope comes only from

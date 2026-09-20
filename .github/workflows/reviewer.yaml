@@ -209,7 +209,11 @@ jobs:
               echo "PR #$NUM is already in the owner's queue; not pinging again."
               exit 0
             fi
-            gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner || true
+            if ! gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner; then
+              gh label create status:owner -R "$GITHUB_REPOSITORY" --color 0e8a16 --force \
+                --description "Green and approved: the owner's queue" || true
+              gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner || true
+            fi
             gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
               "@rechefe green and approved — ready for you. Review: $RUN_URL"
             exit 0
@@ -228,6 +232,16 @@ jobs:
           if [ -z "${ISSUE:-}" ]; then
             gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
               "@rechefe the reviewer requested changes, and this PR has no \`Closes #<issue>\` line, so the loop cannot find the agent to send it back to. Review: $RUN_URL"
+            exit 0
+          fi
+          # Same guard `rework.yaml` applies. A blocked PR is a draft and drafts are never
+          # reviewed, so this is mostly unreachable -- except by the one branch in
+          # `agent.yaml` that leaves an issue `status:blocked` with a *non-draft* PR open,
+          # because the agent could not put it in draft. That PR can still go green.
+          if [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels \
+                    --jq '[.labels[].name] | index("status:blocked") // "no"')" != no ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "Changes requested, but issue #$ISSUE is \`status:blocked\` — an agent already judged it impossible as written, so the loop stops here. @rechefe the orchestrator's step 3 decides what happens next. Review: $RUN_URL"
             exit 0
           fi
           echo "request_changes on PR #$NUM -> agent ($ROLE) on issue #$ISSUE"

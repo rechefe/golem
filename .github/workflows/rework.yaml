@@ -32,6 +32,13 @@ on:
     workflows: [ci]
     types: [completed]
 
+# One decision at a time per branch. Two `ci` completions landing together could otherwise
+# both read no `reviewer` status and both dispatch -- two Opus reviews on one commit. The
+# pending-status marker closes most of that race; this closes the rest.
+concurrency:
+  group: rework-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   actions: write
@@ -55,8 +62,11 @@ jobs:
 
           # Look the PR up by head *branch*. `workflow_run.pull_requests` is empty on some runs
           # and a head-SHA match breaks the moment the branch is pushed again while `ci` runs.
+          # `--head` matches the branch *name*, so a fork PR on a branch of the same name
+          # collides with ours. Filter to PRs whose head is this repository.
           pr=$(gh pr list -R "$REPO" --state open --head "$HEAD_BRANCH" \
-                 --json number,headRefName,headRefOid,author,body,isDraft --jq '.[0] // empty')
+                 --json number,headRefName,headRefOid,author,body,isDraft,headRepositoryOwner,headRepository \
+                 --jq "[.[] | select((.headRepositoryOwner.login + \"/\" + .headRepository.name) == \"$REPO\")] | .[0] // empty")
           if [ -z "$pr" ]; then echo "No open PR for $HEAD_BRANCH -- nothing to do."; exit 0; fi
 
           num=$(jq -r .number <<<"$pr")

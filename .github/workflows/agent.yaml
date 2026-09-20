@@ -184,8 +184,18 @@ jobs:
           echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
           [ "$outcome" = blocked ] || exit 0
           reason=$(jq -r '.reason' <<<"$RESULT")
-          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" \
-            --add-label status:blocked --remove-label status:running || true
+          # Split, and self-healing. A combined `--add-label X --remove-label Y` is one API
+          # call: if `status:blocked` does not exist yet -- `setup.yaml` is
+          # `workflow_dispatch`-only and this label is new -- the call fails and `|| true`
+          # swallows *both* halves, leaving the issue `status:running` and unlabelled. The
+          # orchestrator's step 3 would never see it and `rework.yaml` would never see the
+          # label it treats as the loop's bound, so the block would silently not bind.
+          if ! gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:blocked; then
+            gh label create status:blocked -R "$GITHUB_REPOSITORY" --color d4c5f9 --force \
+              --description "An agent says the issue cannot be done as written" || true
+            gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:blocked || true
+          fi
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label status:running || true
           gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
             "**Blocked** ($ROLE agent, run: $RUN_URL)
 
@@ -198,8 +208,11 @@ jobs:
           # `blocked` that resets the counter while leaving a *non-draft* PR open would let
           # `ci` red -> agent -> `blocked` -> counter reset -> `ci` red run forever. If the
           # agent could not put the PR in that state, the attempt stands.
-          drafts=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --json isDraft,body \
-            --jq "[.[] | select(.isDraft and (.body | test(\"[Cc]loses #$ISSUE([^0-9]|\$)\")))] | length")
+          drafts=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json isDraft,body,headRefName \
+            --jq "[.[] | select(.isDraft
+                    and (.headRefName | startswith(\"$ROLE/$ISSUE-\"))
+                    and (.body | test(\"[Cc]loses #$ISSUE([^0-9]|\$)\")))] | length")
           if [ "$drafts" = 0 ]; then
             gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
               "The block above has no draft PR stating it, so this attempt stands. @rechefe the agent should have opened a draft \`[blocked]\` PR, or marked its existing one a draft."
