@@ -9,7 +9,9 @@ same thing to the designer, to the verifier, to SymbiYosys and to cocotb, becaus
 read the same compiled monitor.
 
 This file is the language reference. It is documentation, not a block spec: the compiler never
-reads it, so the emet blocks below are illustrations and constrain nothing.
+reads it, so the emet blocks below are illustrations and constrain nothing. Where an
+illustration is lifted from a real block spec — the `UTX` unit block and one-line properties
+from `spec/uart_tx.md` — that file is the normative copy and this one follows it.
 
 ## What emet is, and what it is not
 
@@ -179,10 +181,11 @@ Exactly one `unit` block per block spec, and every property in that file attache
 ### The property block
 
 ```emet
-property UTX-HSK-002 {
-  sample T = divisor + 1;
-  hold 10 * T after accept: !ready;
-  cover shortest_bit: T == 1;
+// An invented example: the host SPI link is not specified yet.
+property SPI-BSY-001 {
+  sample N = len + 1;
+  hold 8 * N after cmd_start: busy;
+  cover shortest: $t == $n && N == 1;
 }
 ```
 
@@ -568,117 +571,21 @@ Named so that no one has to guess whether they exist:
 - `onehot`/`mutex` take a list of conditions, not a vector.
 - Properties are per-unit; there is no way to relate two units' signals.
 
-## Worked examples: every requirement of `spec/uart_tx.md`
+## Worked examples
 
-These are illustrations — `spec/uart_tx.md` still carries its Acceptance lines until it is
-converted — but they are the properties that conversion should produce, and between them they
-use every pattern.
+A worked example of every pattern this file defines lives in the block spec that uses it, and
+nowhere else: a property has one normative home, and a copy of it here would be a second one to
+drift from.
 
-```emet
-unit UTX golem_uart_tx {
-  clock clock;
-  reset clear;
+`spec/uart_tx.md` is the worked example for `invariant`, `at`, `hold` and `stable`, and for
+`sample`, `$t`, `$n` and `cover`: its unit block sits under the interface table, seven of its
+eight `UTX-*` requirements carry the properties between them, and the eighth (`UTX-FRM-002`) is
+the worked example of a requirement that keeps a prose Acceptance line. Read it alongside this
+file.
 
-  in  clear   1;
-  in  data    8;
-  in  valid   1;
-  in  divisor 16;
-  out tx      1;
-  out ready   1;
-
-  // spec/uart_tx.md "Definitions": the accept edge.
-  let accept = valid && ready && !clear;
-}
-```
-
-**UTX-RST-001 — Reset state.** The one property whose trigger is the reset itself. A firing is
-cancelled if `clear` is still true at the next edge, so the check lands on the first edge after
-the *last* clear edge — exactly the requirement's "first edge after an edge where `clear = 1`
-was sampled".
-
-```emet
-property UTX-RST-001.tx    { at 1 after clear: tx; }
-property UTX-RST-001.ready { at 1 after clear: ready; }
-```
-
-**UTX-IDL-001 — Idle line is high.**
-
-```emet
-property UTX-IDL-001 { invariant ready -> tx; }
-```
-
-**UTX-HSK-001 — Single acceptance.** `valid` while `ready = 0` is not queued, so the line must
-not move while the block is idle: `tx` is stable from any idle edge through the next accept
-edge, and the start bit can only appear at the edge after one.
-
-```emet
-property UTX-HSK-001 {
-  stable tx after (ready && !accept && !clear) until accept;
-}
-```
-
-**UTX-HSK-002 — Busy during a frame.** `ready = 0` at k+1 .. k+10T.
-
-```emet
-property UTX-HSK-002 {
-  sample T = divisor + 1;
-  hold 10 * T after accept: !ready;
-  cover shortest_bit: $t == $n && T == 1;
-}
-```
-
-**UTX-HSK-003 — Ready after the frame.** `ready = 1` at k+10T+1 exactly. The firing retires at
-that edge, so the back-to-back accept the requirement permits there is not an overlap.
-
-```emet
-property UTX-HSK-003 {
-  sample T = divisor + 1;
-  at 10 * T + 1 after accept: ready;
-}
-```
-
-**UTX-HSK-004 — Ready holds while idle.** The same shape as UTX-HSK-001 on the other output.
-Each idle edge re-arms the firing, so `ready` is pinned high from wherever it last went high
-through the next accept edge.
-
-```emet
-property UTX-HSK-004 {
-  stable ready after (ready && !accept && !clear) until accept;
-}
-```
-
-**UTX-FRM-001 — Frame waveform.** `tx = F[(n-1) div T]` at edge k+n for n = 1 .. 10T. The
-division is written as a comparison chain: bit i applies while `i*T < $t <= (i+1)*T`.
-
-```emet
-property UTX-FRM-001 {
-  sample T = divisor + 1;
-  sample F = {1'b1, data, 1'b0};      // F[0] start, F[1..8] data LSB first, F[9] stop
-  hold 10 * T after accept:
-    tx == ($t <= 1*T ? F[0] :
-           $t <= 2*T ? F[1] :
-           $t <= 3*T ? F[2] :
-           $t <= 4*T ? F[3] :
-           $t <= 5*T ? F[4] :
-           $t <= 6*T ? F[5] :
-           $t <= 7*T ? F[6] :
-           $t <= 8*T ? F[7] :
-           $t <= 9*T ? F[8] :
-                       F[9]);
-  cover byte_a5: $t == $n && F == 10'b1_1010_0101_0;
-  cover clear_midframe: $t > 4*T && clear;
-}
-```
-
-**UTX-FRM-002 — Inputs latched at acceptance.** No emet block: the requirement says the
-properties above hold with `data`, `divisor` and `valid` unconstrained after the accept edge,
-which is a statement about what the harness may not assume. emet has no `assume`, so there is
-nothing to write and nothing that could weaken it — `sample` is the mechanism, and this
-requirement keeps its prose **Acceptance** line as the standing prohibition on adding one.
-
-**Patterns not exercised by the UART.** `within` and `onehot`/`mutex` have no use in a block
-this small; they first appear in the host SPI link and the sequencer, and would read like this
-(the IDs are invented — neither block is specified yet):
+`within` and `onehot`/`mutex` have no use in a block as small as the UART. They first appear in
+the host SPI link and the sequencer, and read like this (the IDs are invented — neither block is
+specified yet):
 
 ```emet
 // "The chip answers a read within 8 cycles of the command byte" — a deadline.
