@@ -1,0 +1,97 @@
+# Rework: closes the loop between an agent, CI and the reviewer without the owner.
+#
+# The owner should only ever see a PR that is green and approved. This workflow is what makes
+# that true. It wakes when `ci` or `reviewer` finishes on an agent's PR and decides what
+# happens next:
+#
+#   agent pushes -> ci
+#     ci red      -> run the agent again (fix the build)
+#     ci green    -> run the reviewer
+#       reviewer request_changes -> run the agent again (address the findings)
+#       reviewer approve         -> label the PR `status:owner` and ping the owner. Done.
+#
+# Two things make this workable rather than obvious:
+#
+#  - It dispatches with `gh workflow run`, never by adding a label. `agent.yaml` fires on
+#    `issues: labeled`, and a label added by this workflow would be a GITHUB_TOKEN event, which
+#    starts no run -- the same suppression that kept `ci` off agent branches (gap 3 in
+#    agents/README.md). `workflow_dispatch` is one of the two events exempt from it.
+#  - It cannot loop. `agent.yaml` counts `Attempt N/3` comments on the issue and marks the
+#    issue `status:stuck` past the cap, so the ping-pong ends whatever happens here.
+#
+# It acts only on PRs opened by an agent -- branch `<role>/<issue>-<slug>`, author `claude[bot]`
+# -- so the owner's own PRs are never touched.
+name: rework
+
+on:
+  workflow_run:
+    workflows: [ci, reviewer]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  next:
+    runs-on: ubuntu-24.04
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    steps:
+      - name: Decide and dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WF: ${{ github.event.workflow_run.name }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+
+          # The PR this run belongs to: match the open PR whose head commit is this run's.
+          pr=$(gh pr list -R "$REPO" --state open --json number,headRefName,headRefOid,author,body \
+                 --jq ".[] | select(.headRefOid==\"$HEAD_SHA\") | @json" | head -n1)
+          if [ -z "$pr" ]; then echo "No open PR at $HEAD_SHA -- nothing to do."; exit 0; fi
+
+          num=$(jq -r .number <<<"$pr")
+          author=$(jq -r .author.login <<<"$pr")
+          branch=$(jq -r .headRefName <<<"$pr")
+          role=${branch%%/*}
+
+          # Agent PRs only. Anything else is the owner's and is not ours to drive.
+          case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
+          if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
+
+          issue=$(jq -r .body <<<"$pr" | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
+          if [ -z "$issue" ]; then
+            gh pr comment "$num" -R "$REPO" --body \
+              "@rechefe this PR has no \`Closes #<issue>\` line, so the rework loop cannot find its issue and stops here."
+            exit 0
+          fi
+
+          dispatch_agent () {
+            echo "ci/reviewer red on PR #$num -> agent ($role) on issue #$issue"
+            gh workflow run agent.yaml -R "$REPO" -f role="$role" -f issue="$issue"
+          }
+
+          case "$WF:$CONCLUSION" in
+            ci:success)
+              echo "ci green on PR #$num -> reviewer"
+              gh workflow run reviewer.yaml -R "$REPO" -f pr="$num"
+              ;;
+            ci:failure|reviewer:failure)
+              dispatch_agent
+              ;;
+            reviewer:success)
+              echo "reviewer approved PR #$num -> the owner"
+              gh pr edit "$num" -R "$REPO" --add-label status:owner
+              gh pr comment "$num" -R "$REPO" --body \
+                "@rechefe green and approved — ready for you. Closes #$issue. Reviewer run: $RUN_URL"
+              ;;
+            *)
+              echo "$WF finished $CONCLUSION -- no action."
+              ;;
+          esac

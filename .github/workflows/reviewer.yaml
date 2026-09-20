@@ -20,12 +20,22 @@ name: reviewer
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  # `rework.yaml` dispatches a re-review once `ci` is green on an agent's fix push. The event
+  # cannot be relied on for that: a `pull_request_target` run was not created for either of the
+  # agent's GITHUB_TOKEN pushes on `spec/3-workload-study` (gap 3 in agents/README.md), so
+  # without this input a retry never gets re-reviewed and the ping-pong stops after one round.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review
+        type: number
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: reviewer-${{ github.event.pull_request.number }}
+  group: reviewer-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 jobs:
@@ -39,11 +49,23 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - name: External PRs need the owner
-        if: github.event.pull_request.head.repo.full_name != github.repository
+      - name: Resolve the PR, and refuse forks
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
-          echo "PR from a fork: the reviewer agent does not run on external code. Owner review required."
-          exit 1
+          set -euo pipefail
+          gh pr view "$N" -R "$GITHUB_REPOSITORY" \
+            --json number,state,headRefOid,headRepository,headRepositoryOwner > /tmp/pr.json
+          head_repo="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' /tmp/pr.json)"
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "PR from a fork ($head_repo): the reviewer agent does not run on external code. Owner review required."
+            exit 1
+          fi
+          if [ "$(jq -r .state /tmp/pr.json)" != OPEN ]; then echo "PR #$N is not open."; exit 1; fi
+          echo "number=$(jq -r .number /tmp/pr.json)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r .headRefOid /tmp/pr.json)" >> "$GITHUB_OUTPUT"
 
       - name: Checkout main (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,7 +73,7 @@ jobs:
       - name: Checkout PR head (data only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.sha }}
           path: pr-head
           persist-credentials: false
 
@@ -65,11 +87,11 @@ jobs:
           display_report: true
           prompt: |
             You are the reviewer agent for ${{ github.repository }}.
-            Read CLAUDE.md, then agents/reviewer.md, then review PR #${{ github.event.pull_request.number }}.
+            Read CLAUDE.md, then agents/reviewer.md, then review PR #${{ steps.pr.outputs.number }}.
             The PR's files are in ./pr-head (read-only); the spec is in ./pr-head/spec and ./spec.
-            Get the diff with `gh pr diff ${{ github.event.pull_request.number }}` and the description
-            and linked issue with `gh pr view ${{ github.event.pull_request.number }}`.
-            Post your findings with `gh pr comment ${{ github.event.pull_request.number }} --body-file <file>`,
+            Get the diff with `gh pr diff ${{ steps.pr.outputs.number }}` and the description
+            and linked issue with `gh pr view ${{ steps.pr.outputs.number }}`.
+            Post your findings with `gh pr comment ${{ steps.pr.outputs.number }} --body-file <file>`,
             then return the structured verdict.
           claude_args: >-
             --model opus

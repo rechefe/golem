@@ -25,6 +25,7 @@ jobs:
           mk status:running   fbca04 "An agent is working on it"
           mk status:stuck     b60205 "3 failed attempts: owner decision needed"
           mk spec:behaviour   d93f0b "Spec change that waits for the owner"
+          mk status:owner     0e8a16 "Green and approved: the owner's queue"
 
       - name: spec-provisional branch
         env:

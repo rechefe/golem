@@ -14,8 +14,9 @@ not this one.
 |---|---|---|---|
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
-| `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
+| `reviewer.yaml` | `pull_request_target`, or `workflow_dispatch` with a PR number | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
+| `rework.yaml` | `workflow_run` completed for `ci` or `reviewer` | — | Closes the loop: dispatches the next actor on an agent PR, or hands a green and approved one to the owner. Acts only on branches `<role>/…` opened by `claude[bot]`. |
 | `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
@@ -36,31 +37,58 @@ flowchart TD
     orch -->|"adds label agent:ROLE"| agent
     agent["agent.yaml: spec, designer or verifier"]
     agent -->|"pushes a branch, opens a PR"| pr(["pull request"])
-    pr --> checks["ci, gds, docs"]
-    pr --> rev["reviewer.yaml"]
-    rev --> verdict{"verdict"}
-    verdict -->|approve| gate(["owner merges"])
-    verdict -->|request_changes| orch
-    checks -->|red| orch
-    orch -->|"rework: re-adds agent:ROLE, next daily run"| agent
+    pr --> checks["ci.yaml"]
+    checks --> rw["rework.yaml"]
+    rw -->|"ci green: dispatches reviewer"| rev["reviewer.yaml"]
+    rev --> rw2["rework.yaml"]
+    rw -->|"ci red: dispatches the agent"| agent
+    rw2 -->|"request_changes: dispatches the agent"| agent
+    rw2 -->|"approve: labels status:owner, pings"| gate(["owner merges"])
+    agent -->|"4th attempt"| stuck(["status:stuck, owner pinged"])
     gate --> done(["issue closed"])
 ```
 
-The orchestrator does **not** supervise agents. It adds a label and exits, and the **forward**
-path — push, PR, checks, review — is GitHub Actions reacting to events.
+The orchestrator does **not** supervise agents. It adds a label and exits; everything after
+that is GitHub Actions reacting to events, and `rework.yaml` is what makes the *return* path
+react too.
 
-**The return path is not.** Nothing fires on a red check or a `request_changes` verdict:
-`reviewer.yaml` merely exits non-zero, `ci.yaml` has no downstream trigger, and `agent.yaml`
-listens only for `issues: labeled` and `workflow_dispatch`. The only thing that puts an issue
-back to work is the orchestrator's **step 3, Rework**, on its *next scheduled run*. Three
-consequences follow, and they are the ones that actually bite:
+**What the return path used to be.** Nothing fired on a red check or a `request_changes`
+verdict: `reviewer.yaml` merely exited non-zero, `ci.yaml` had no downstream trigger, and
+`agent.yaml` listened only for `issues: labeled` and `workflow_dispatch`. The only thing that
+put an issue back to work was the orchestrator's **step 3, Rework**, on its *next scheduled
+run* — so a red PR sat up to ~24 hours, and a single round of review feedback cost a day and
+one of the issue's three attempts. Keeping the orchestrator alive longer fixes none of that:
+the retry lands on the next run either way, and polling in between costs budget for no
+information.
 
-- a red PR can sit up to **~24 hours** before anything touches it;
-- the retry is charged against `AGENT_RUNS_PER_DAY`;
-- it burns one of the issue's **three attempts**.
+**What it is now.** `rework.yaml` wakes on `workflow_run: completed` for `ci` and `reviewer`,
+identifies the agent PR by its head commit, and dispatches the next actor within seconds:
 
-Keeping the orchestrator alive longer fixes none of that — the retry lands on the next run
-either way, and polling in between costs budget for no information.
+| It wakes on | It does |
+|---|---|
+| `ci` green | dispatch `reviewer.yaml` on that PR |
+| `ci` red | dispatch `agent.yaml` on the PR's issue, same role |
+| `reviewer` `request_changes` (job fails) | dispatch `agent.yaml`, same role |
+| `reviewer` `approve` (job passes) | label the PR `status:owner` and ping the owner |
+
+So the owner's queue is only ever PRs that are green **and** approved.
+
+Two details carry the design:
+
+- **It dispatches, it does not label.** Adding `agent:<role>` from a workflow would be a
+  `GITHUB_TOKEN` event, and GitHub starts no run for one (gap 3) — the loop would silently do
+  nothing. `workflow_dispatch` is one of the two events exempt from that rule, and both
+  `agent.yaml` and `reviewer.yaml` accept it.
+- **`reviewer.yaml` had to gain that input.** It is `pull_request_target`, and no
+  `pull_request_target` run was created for either of the agent's `GITHUB_TOKEN` pushes on
+  `spec/3-workload-study` (gap 3 again). Waiting for the event would have meant a fix push is
+  never re-reviewed, so the loop dispatches the reviewer explicitly instead.
+
+**The loop cannot run away.** `agent.yaml` counts `Attempt N/3` comments on the issue and, past
+the cap, labels it `status:stuck` and pings the owner instead of running. Note that rework
+dispatches do **not** pass through `AGENT_RUNS_PER_DAY` — that ceiling is the orchestrator's
+step 1 and governs *new* work only. Finishing something already started is bounded by the
+attempt cap, not by the daily budget.
 
 ## An issue's life
 
