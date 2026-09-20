@@ -48,9 +48,10 @@ Extraction rules, so that reading the Markdown is unambiguous:
 
 - The block opens with exactly three backticks followed by `emet` and nothing else, at column
   0, and closes with exactly three backticks at column 0.
-- The compiler reads the **block specs**: the files listed in the Files table of
-  `spec/README.md`, i.e. every `spec/*.md` other than `README.md` and this file. Everything
-  else in `spec/` — `workloads/`, prose, tables — is invisible to it.
+- The compiler reads the **block specs**: the block files of the Files table in
+  `spec/README.md` — every `spec/*.md` except `README.md` and this file, which are conventions
+  and not blocks. Everything else in `spec/` — `workloads/`, prose, tables — is invisible to
+  it.
 - A block's **section** is the nearest `###` heading above it. A `property` in a block under a
   requirement's heading belongs to that requirement.
 - The `unit` block sits in the block spec's `## Interface` section, directly under the
