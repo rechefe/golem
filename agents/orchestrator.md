@@ -17,8 +17,12 @@ tools are issues, labels and comments; your measure is the milestone table in `P
 
 ## Steps (daily run)
 
-1. **Budget**: count agent runs started in the last 24 hours (workflow runs of
-   `agent.yaml`). If it has reached the repo variable `AGENT_RUNS_PER_DAY`, skip steps 3 and 4
+1. **Budget**: count agent runs started in the last 24 hours — `agent.yaml` workflow runs
+   whose conclusion is **not** `skipped`. A run the `if:` guard rejects starts no agent and
+   costs nothing, so it must not be counted. `agent.yaml` fires on *any* label, so filing a
+   batch of issues produces one rejected run each: on 2026-09-19 that was 11 rejected runs
+   against 3 real ones, and counting all 14 blocked the next day's dispatch entirely.
+   If the count has reached the repo variable `AGENT_RUNS_PER_DAY`, skip steps 3 and 4
    (no new runs today).
 2. **Stuck check**: an issue whose attempt counter (comments starting `Attempt N/3`) reached
    3 without a merged PR gets `status:stuck` and one comment mentioning `@rechefe` with a
@@ -30,6 +34,11 @@ tools are issues, labels and comments; your measure is the milestone table in `P
 4. **Dispatch**: for `status:ready` issues, oldest milestone first, add the `agent:<role>`
    label named on the issue's `Role:` line and swap `status:ready` for `status:running`, one
    issue per role at a time, within the remaining budget.
+
+   A `status:running` issue holds its role's slot. If it holds it while no agent run is in
+   progress and step 3 cannot rework it — because it has no open PR (gap 1), or because its
+   open PR is waiting on the owner — say so in one comment on that issue naming what the
+   owner has to do, so a parked issue does not silently block every other issue of its role.
 5. **Plan ahead**: compare open issues against the next milestone. Scope comes only from
    `PLAN.md` and requirements merged into `spec/` on `main`; never invent features. File the
    missing issues, each starting with a `Role:` line and naming its requirement IDs:

@@ -262,8 +262,9 @@ Two more deliberate choices:
 ## Budget and pacing
 
 Half of a Max plan's weekly usage, paced to roughly one seventh per day. The orchestrator
-counts `agent.yaml` runs in the last 24 hours against the repository variable
-`AGENT_RUNS_PER_DAY` (default 6) and stops dispatching once it is reached.
+counts `agent.yaml` runs in the last 24 hours — those not rejected by the workflow's guard —
+against the repository variable `AGENT_RUNS_PER_DAY` (default 6, set under Settings → Secrets
+and variables → Actions → Variables) and stops dispatching once it is reached.
 
 Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier` run on Sonnet
 and escalate to Opus on their third attempt.
@@ -367,9 +368,19 @@ git history and the open issues before trusting it.
    names the Nexys Video (Artix-7 200T) as the FPGA target and says it is run by hand and
    never wired to CI. The two are consistent, but together they mean nothing in this
    repository builds the bitstream behind the submission package's FPGA video.
-6. **A dispatch costs two runs against the budget, not one.** The orchestrator counts "workflow
-   runs of `agent.yaml`", and a run the guard rejects still *is* a run. Dispatch adds two
-   labels — `agent:<role>` and `status:running` — so each one produces a real run and a skipped
-   one. Observed on 2026-09-19: issue #8's dispatch at 12:13:22 produced runs `35442244471`
-   (success) and `35442244449` (skipped). `AGENT_RUNS_PER_DAY = 6` therefore buys about three
-   dispatches a day, not six.
+6. **Guard-rejected runs used to be charged against the budget.** `agent.yaml` fires on
+   `issues: types: [labeled]`, so *every* label — `status:ready` on a newly filed issue, the
+   `status:running` half of a dispatch — starts a run that the `if:` guard rejects in about a
+   second. The orchestrator counted "workflow runs of `agent.yaml`", and a rejected run still
+   *is* a run.
+
+   Observed on 2026-09-19: 14 runs, of which 3 started an agent (`35438490991`,
+   `35441893716`, `35442244471`) and 11 were rejected — 8 of them from the owner filing
+   issues #6–#13 in three minutes. On 2026-09-20 the orchestrator read 14 against
+   `AGENT_RUNS_PER_DAY = 6`, skipped steps 3 and 4, and dispatched nothing; it recorded the
+   arithmetic in its digest, issue #17. Filing issues, an act that costs no agent time,
+   bought a day of silence.
+
+   Step 1 now counts only runs whose conclusion is not `skipped`, so the budget means what it
+   says: `AGENT_RUNS_PER_DAY = 6` is six agents. Left unfixed: the rejected runs still appear
+   in the Actions tab, where they read as failures to a human scanning the list.
