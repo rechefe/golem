@@ -33,7 +33,8 @@ disagree, that file wins and this one is the bug.
   the same monitor would mean two different things in the two harnesses. emet has no way to
   write one: a property that needs an input constrained puts that constraint in its trigger,
   and a requirement whose check is a constraint on the harness rather than a property of the
-  trace keeps a prose **Acceptance** line instead (see `UTX-FRM-002`).
+  trace keeps a prose **Acceptance** line instead (see `UTX-FRM-002`, and `UTX-RST-002` for the
+  initial-state anchor every harness must establish).
 - The compiler lives in `formal/emet/` — the verifier's lane. This file specifies the
   language; the verifier builds the compiler.
 
@@ -89,8 +90,9 @@ for the compiler's own checks (`__overlap`, `__range`, `__fired`); never write o
   check and there is no Acceptance line. Two normative statements of one check drift; one does
   not.
 - Where emet cannot express the check — a pin map, a synthesis or flow constraint, a
-  requirement about what the *harness* may not assume (`UTX-FRM-002`) — the prose
-  **Acceptance** line stays and there is no emet block.
+  requirement about what the *harness* may not assume (`UTX-FRM-002`), the initial-state anchor
+  it must establish (`UTX-RST-002`) — the prose **Acceptance** line stays and there is no emet
+  block.
 
 A requirement with neither, or with both, is a spec bug; the reviewer treats it as one.
 
@@ -566,10 +568,18 @@ Named so that no one has to guess whether they exist:
 - **No way to constrain or anchor the initial state.** There is no `assume`, and a trigger can
   only select edges a trace already reaches, so "the unit starts in reset" is not sayable. A
   property set whose triggers all require some state to have been reached is vacuously
-  satisfied by a design that never reaches it, and emet cannot rule that design out. A
-  requirement in that position must say in a **Note** where its anchor comes from and that the
-  anchor is an obligation on the harness — see `UTX-HSK-004` in `spec/uart_tx.md`, which is
-  the worked example of the hole. The harnesses are the verifier's lane.
+  satisfied by a design that never reaches it, and emet cannot rule that design out.
+
+  This is a permanent division of labour and not a gap waiting for a v1 construct. The anchor
+  is a constraint on the traces a harness presents, not a property of the unit within a trace,
+  so an `initial <expr>;` would be the rejected `assume` under another name: under formal it
+  would *constrain* the engine, under simulation it could at best *check* that the testbench
+  complied. One construct, two meanings, two harnesses — exactly what "No `assume`" above is
+  there to prevent. So the anchor lives in the MAS as a prose requirement instead, one per
+  block spec, where it is traceable and cannot be dropped silently: see
+  `spec/README.md`, "Initial-state anchor", and `UTX-RST-002` in `spec/uart_tx.md`, which is
+  the worked example. `UTX-HSK-004` is the worked example of a property that needs one. The
+  harnesses that discharge it are the verifier's lane.
 - No `$past` and no look-back operators; no `rose`/`fell`.
 - One clock per unit; no clock-domain-crossing properties.
 - No liveness: every pattern is a safety property, and "eventually" is `within` with a
@@ -589,8 +599,9 @@ drift from.
 
 `spec/uart_tx.md` is the worked example for `invariant`, `at`, `hold` and `stable`, and for
 `sample`, `$t`, `$n` and `cover`: its unit block sits under the interface table, seven of its
-eight `UTX-*` requirements carry the properties between them, and the eighth (`UTX-FRM-002`) is
-the worked example of a requirement that keeps a prose Acceptance line. Read it alongside this
+nine `UTX-*` requirements carry the properties between them, and the other two are the worked
+examples of a requirement that keeps a prose Acceptance line — `UTX-FRM-002`, a prohibition on
+what a harness may assume, and `UTX-RST-002`, the initial-state anchor. Read it alongside this
 file.
 
 `within` and `onehot`/`mutex` have no use in a block as small as the UART. They first appear in
