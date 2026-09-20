@@ -234,6 +234,7 @@ prop-name   ::= req-id [ "." tag ]
 req-id      ::= upper{2,4} "-" upper{2,4} "-" digit{3}     // spec/README.md convention
 tag         ::= (lower | digit | "_")+
 ident       ::= (letter | "_") { letter | digit | "_" }
+expr        ::= see "Expressions" below
 ```
 
 Keywords — `unit`, `property`, `clock`, `reset`, `in`, `out`, `let`, `sample`, `invariant`,
