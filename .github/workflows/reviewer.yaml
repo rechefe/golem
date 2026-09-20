@@ -40,6 +40,11 @@ concurrency:
 
 jobs:
   reviewer:
+    # Never review a draft. `opened` fires for draft PRs, and a `[blocked]` draft is
+    # deliberately incomplete -- reviewing it would produce `request_changes` and send the
+    # agent back at issue text that has not changed, which is what `outcome: blocked` exists
+    # to prevent. `ci.yaml` and `rework.yaml` skip drafts for the same reason.
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     environment: agents
     timeout-minutes: 45
@@ -59,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           gh pr view "$N" -R "$GITHUB_REPOSITORY" \
-            --json number,state,headRefOid,headRefName,headRepository,headRepositoryOwner,author,body > /tmp/pr.json
+            --json number,state,headRefOid,headRefName,headRepository,headRepositoryOwner,author,body,isDraft > /tmp/pr.json
           head_repo="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' /tmp/pr.json)"
           if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
             echo "PR from a fork ($head_repo): the reviewer agent does not run on external code. Owner review required."
@@ -71,6 +76,12 @@ jobs:
           branch="$(jq -r .headRefName /tmp/pr.json)"
           role="${branch%%/*}"
           issue="$(jq -r '.body // ""' /tmp/pr.json | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+          if [ "$(jq -r .isDraft /tmp/pr.json)" = true ]; then
+            echo "PR #$N is a draft; reviewing it, but the loop does not drive a draft."
+            echo "agent=false" >> "$GITHUB_OUTPUT"
+            echo "role=" >> "$GITHUB_OUTPUT"; echo "issue=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           case "$role:$(jq -r .author.login /tmp/pr.json)" in
             spec:claude\[bot\]|designer:claude\[bot\]|verifier:claude\[bot\]) agent=true ;;
             *) agent=false ;;
@@ -129,7 +140,7 @@ jobs:
       # and `if: always()` means a reviewer that crashes -- an OIDC 401, a timeout -- reports
       # red instead of leaving the check dangling, which is what stranded PR #5.
       - name: Report the verdict on the PR head
-        if: always()
+        if: '!cancelled()'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.pr.outputs.sha }}
@@ -151,7 +162,7 @@ jobs:
       # points at the default branch, and `workflow_run.pull_requests` is empty on some runs.
       # Here the PR is already resolved, so the verdict acts on it directly.
       - name: Drive the agent PR on the verdict
-        if: always() && steps.pr.outputs.agent == 'true'
+        if: '!cancelled() && steps.pr.outputs.agent == ''true'''
         env:
           GH_TOKEN: ${{ github.token }}
           NUM: ${{ steps.pr.outputs.number }}
@@ -162,22 +173,35 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${VERDICT:-}" = approve ]; then
-            gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner
+            # `|| true`: the label is created by setup.yaml, which is `workflow_dispatch`-only
+            # and must be re-run after this merges. The ping is what matters and must not be
+            # lost to a missing label.
+            gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner || true
             gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
               "@rechefe green and approved — ready for you. Review: $RUN_URL"
             exit 0
           fi
-          # request_changes, or a reviewer that crashed without a verdict: back to the agent.
-          if [ -z "${ISSUE:-}" ]; then
+
+          # Only a real `request_changes` sends the agent back. A reviewer that returned no
+          # verdict did not judge the work: an OIDC 401 or a timeout is an infrastructure
+          # failure, and spending the issue's attempts on it would march a sound PR to
+          # `status:stuck` with nothing wrong in the agent's work.
+          if [ "${VERDICT:-}" != request_changes ]; then
             gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
-              "@rechefe the reviewer did not approve, and this PR has no \`Closes #<issue>\` line, so the loop cannot find the agent to send it back to. Review: $RUN_URL"
+              "@rechefe the reviewer finished without a verdict, so this PR is not moving on its own. Nothing was charged against issue #${ISSUE:-?}'s attempts. Re-run the reviewer, or dispatch it with \`gh workflow run reviewer.yaml -f pr=$NUM\`. Run: $RUN_URL"
             exit 0
           fi
-          echo "verdict '${VERDICT:-none}' on PR #$NUM -> agent ($ROLE) on issue #$ISSUE"
+
+          if [ -z "${ISSUE:-}" ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe the reviewer requested changes, and this PR has no \`Closes #<issue>\` line, so the loop cannot find the agent to send it back to. Review: $RUN_URL"
+            exit 0
+          fi
+          echo "request_changes on PR #$NUM -> agent ($ROLE) on issue #$ISSUE"
           gh workflow run agent.yaml -R "$GITHUB_REPOSITORY" -f role="$ROLE" -f issue="$ISSUE"
 
       - name: Fail on a non-approval
-        if: always()
+        if: '!cancelled()'
         env:
           VERDICT: ${{ steps.verdict.outputs.verdict }}
         run: '[ "${VERDICT:-}" = approve ]'

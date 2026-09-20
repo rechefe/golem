@@ -19,7 +19,7 @@ not this one.
 | `rework.yaml` | `workflow_run` completed for `ci` | — | Half the loop: `ci` red sends an agent PR back to its agent, `ci` green sends it to the reviewer. The verdict half lives in `reviewer.yaml`. Acts only on branches `<role>/…` opened by `claude[bot]`. |
 | `gds.yaml` | `main`, nightly at 02:00 UTC, or `workflow_dispatch` — **not** pull requests | — | Hardening, precheck, gate-level test. About an hour on a 6x4 die, which is why no PR waits on it; run it by hand on a PR that plausibly moves area or timing. It must not be a required status check. Its `viewer` job deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build workflows — and is guarded on `ref == refs/heads/main`. |
 | `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | The datasheet. `docs.yaml`, `fpga.yaml` and `gds.yaml`'s non-`viewer` jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
-| `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
+| `setup.yaml` | `workflow_dispatch` only | — | Idempotent, not one-time: creates the label set and the `spec-provisional` branch everything else leans on. **Re-run it whenever a label is added to it**, or the workflow that uses that label will fail to apply it. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
 There are **five agent roles** carried by **three** workflows: `orchestrator.yaml`,
@@ -91,7 +91,13 @@ Three details carry the design:
 - **A commit is reviewed once.** `reviewer.yaml` still runs on `pull_request_target`, so the
   owner's own PRs are reviewed too; `rework.yaml` therefore dispatches a review only when no
   `reviewer` status exists on that head yet, and `reviewer.yaml`'s per-PR `concurrency` group
-  cancels a duplicate that slips through the gap while a review is still running.
+  cancels a duplicate that slips through the gap while a review is still running. A cancelled
+  review is inert: its steps are `!cancelled()`, so it posts no status and drives nothing.
+- **Only a real `request_changes` sends the agent back.** A reviewer that finished without a
+  verdict — an OIDC 401, a timeout — did not judge the work, and charging that to the issue's
+  three attempts would march a sound PR to `status:stuck` with nothing wrong in it. That case
+  pings the owner and stops. Nor is a draft ever reviewed: a `[blocked]` PR is deliberately
+  incomplete, and `request_changes` on it would send the agent back at unchanged issue text.
 - **`reviewer.yaml` had to gain that input.** It is `pull_request_target`, and no
   `pull_request_target` run was created for either of the agent's `GITHUB_TOKEN` pushes on
   `spec/3-workload-study` (gap 3 again). Waiting for the event would have meant a fix push is
