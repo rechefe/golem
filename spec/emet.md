@@ -33,8 +33,8 @@ disagree, that file wins and this one is the bug.
   the same monitor would mean two different things in the two harnesses. emet has no way to
   write one: a property that needs an input constrained puts that constraint in its trigger,
   and a requirement whose check is a constraint on the harness rather than a property of the
-  trace keeps a prose **Acceptance** line instead (see `UTX-FRM-002`, and `UTX-RST-002` for
-  the one constraint every harness carries).
+  trace keeps a prose **Acceptance** line instead (see `UTX-FRM-002`, and `UTX-RST-002` for the
+  initial-state anchor every harness must establish).
 - The compiler lives in `formal/emet/` — the verifier's lane. This file specifies the
   language; the verifier builds the compiler.
 
@@ -90,8 +90,9 @@ for the compiler's own checks (`__overlap`, `__range`, `__fired`); never write o
   check and there is no Acceptance line. Two normative statements of one check drift; one does
   not.
 - Where emet cannot express the check — a pin map, a synthesis or flow constraint, a
-  requirement about what the *harness* may not assume (`UTX-FRM-002`) or must
-  (`UTX-RST-002`) — the prose **Acceptance** line stays and there is no emet block.
+  requirement about what the *harness* may not assume (`UTX-FRM-002`), the initial-state anchor
+  it must establish (`UTX-RST-002`) — the prose **Acceptance** line stays and there is no emet
+  block.
 
 A requirement with neither, or with both, is a spec bug; the reviewer treats it as one.
 

@@ -51,10 +51,18 @@ that carries emet properties states it as its own requirement** — an ID in the
 area, a Statement that says at which edges the block's reset port is asserted, and a prose
 **Acceptance** line. It never carries an emet block, for the reason `UTX-FRM-002` does not: it
 constrains the harness rather than the trace, and emet has no `assume`. `UTX-RST-002` in
-`uart_tx.md` is the worked example. A block spec with emet properties and no anchor
-requirement is a spec bug; so is a harness that drops the constraint, and because the anchor is
-a requirement it is in the traceability matrix, so dropping it removes a requirement's only
-check and the reviewer reads it as a weakening.
+`uart_tx.md` is the worked example.
+
+**The floor is edges 1 and 2, in every block spec.** Two, not one, because no firing happens at
+edge 1 (`emet.md`, "The execution model"): a reset asserted only at edge 1 triggers an
+`at 1 after <reset>` anchor property nowhere, so nothing is anchored. Edge 1 constrains the
+state that edge 2 — the first checked edge — reads. A block whose anchor needs a longer run
+says so and says why; none may ask for less.
+
+A block spec with emet properties and no anchor requirement is a spec bug; so is a harness that
+drops the constraint. Because the anchor is a requirement it will appear in the traceability
+matrix (`PLAN.md`), so dropping it removes a requirement's only check and the reviewer reads it
+as a weakening.
 
 A block spec with no emet properties — `top.md` today — needs no anchor requirement: it has no
 triggered check for an unreached state to make vacuous. It acquires one when it acquires a

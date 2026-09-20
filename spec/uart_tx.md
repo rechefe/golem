@@ -74,21 +74,32 @@ true at the next edge, so the check lands on the first edge after the *last* edg
 **Statement**: In every trace presented to a checker of this block, `clear = 1` is sampled at
 edge 1 and at edge 2. A harness may hold `clear` for longer; the anchor is those two edges.
 
-**Acceptance**: every harness for this block constrains `clear` so, and therefore rejects a
-substitute design that holds `ready = 0` and `tx = 0` at edges 1, 2 and 3 whatever its inputs
-and follows the rest of this file from edge 4 on. A harness under which that design passes has
-not anchored the trace and does not check this block.
+**Acceptance**: every harness for this block asserts `clear` at edges 1 and 2 of every trace,
+and therefore rejects a substitute design that holds `ready = 0` and `tx = 0` at every edge up
+to and including the first edge after the harness's initial `clear` run, whatever its inputs,
+and follows the rest of this file from the next edge on. A harness under which that design
+passes has not anchored the trace and does not check this block.
 
 **This requirement has no emet block, and must not be given one.** It constrains the traces a
 harness may present, not the behaviour of the block within a trace, and emet has no `assume`
 (`emet.md`, "What emet is, and what it is not"). `README.md`, "Initial-state anchor", says why
 every block spec with emet properties carries a requirement of this shape.
 
-**Note**: *edge 2*, and not edge 1 alone, is what emet needs. No firing happens at edge 1
-(`emet.md`, "The execution model"), so `clear` at edge 1 alone triggers nothing and UTX-RST-001
-never fires. With `clear` at edges 1 and 2, UTX-RST-001 fires at edge 2 and its check lands at
-the first edge after the last edge of the initial `clear` run — edge 3 if the harness releases
-`clear` there.
+**Note**: the mutant in the Acceptance line is phrased against the initial `clear` run and not
+against a fixed edge, so it stays rejected under every run length the Statement allows — a
+harness that releases `clear` at edge 6 sees UTX-RST-001's surviving firing check edge 6, where
+the mutant still holds `ready = 0`. A mutant pinned to edge 3 would be passed by exactly those
+harnesses.
+
+**Note**: both edges are load-bearing, and for different reasons. *Edge 2* is what emet needs:
+no firing happens at edge 1 (`emet.md`, "The execution model"), so `clear` at edge 1 alone
+triggers nothing and UTX-RST-001 never fires. With `clear` at edges 1 and 2, UTX-RST-001 fires
+at edge 2 and its check lands at the first edge after the last edge of the initial `clear` run
+— edge 3 if the harness releases `clear` there. *Edge 1* anchors the state that the first
+checked edge reads: UTX-IDL-001 is an `invariant` and is live from edge 2, and under formal the
+values at edge 2 come from whatever initial state the engine chose, so `ready = 1` with
+`tx = 0` there is a spurious failure of a correct block. Edge 2 anchors the firing; edge 1
+anchors what that firing's edge sees.
 
 **Note**: this is what gives UTX-HSK-004 a base case, and with it the whole file. UTX-RST-001
 puts `ready = 1` at the first edge after the initial `clear` run; UTX-HSK-004 arms there and
