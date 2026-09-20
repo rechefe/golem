@@ -7,8 +7,8 @@ Transmits one byte as an 8N1 frame (1 start bit, 8 data bits LSB first, 1 stop b
 with a programmable bit period.
 
 Checks in this file are written in emet (`emet.md`); `UTX-FRM-002` is the one requirement that
-keeps a prose **Acceptance** line, and says below why it must. A **Note** paragraph under a
-requirement explains how to read its check; it is never itself a check.
+keeps a prose **Acceptance** line, and says below why it must. **Note** paragraphs are
+explanatory and never checks, as `README.md` defines them.
 
 ## Interface
 
@@ -112,12 +112,16 @@ property UTX-HSK-002 {
 property UTX-HSK-003 {
   sample T = divisor + 1;
   at 10 * T + 1 after accept: ready;
+  cover back_to_back: $t == $n && valid;
 }
 ```
 
 **Note**: the earliest next accept edge is therefore k+10T+1, which leaves exactly one extra
 idle-high cycle between back-to-back frames. The firing retires at its check edge, so that
-back-to-back accept edge is not an overlap.
+back-to-back accept edge is not an overlap. `cover back_to_back` asks for that trace: `$t ==
+$n` is the check edge k+10T+1, where this property asserts `ready`, and `valid` there makes it
+an accept edge. It asserts nothing; it is the witness that the retire-at-the-check-edge rule
+leaves back-to-back frames reachable.
 
 ### UTX-HSK-004 — Ready holds while idle
 
@@ -131,8 +135,19 @@ property UTX-HSK-004 {
 ```
 
 **Note**: each idle edge re-arms the firing, so `ready` is pinned high from wherever it last
-went high through the next accept edge. With UTX-RST-001 to anchor it after `clear` and
-UTX-HSK-003 to restore it at k+10T+1, this covers every edge at which no frame is in progress.
+went high through the next accept edge. UTX-RST-001 anchors it at the first edge after a
+`clear` edge and UTX-HSK-003 restores it at k+10T+1, where this property re-arms. So from any
+edge at which `ready = 1`, every later edge at which no frame is in progress is covered.
+
+**Note**: *from any edge at which `ready = 1`* is the whole of the claim, and this file does
+not say that such an edge exists. Every trigger here requires `ready = 1`, directly or through
+`accept`; UTX-RST-001 supplies one only at an edge that follows a `clear` edge, and emet has
+no `assume` with which to require that a trace contains one (`emet.md`, "Limitations of v0").
+A design that held `ready = 0` from edge 1 until the first `clear` would therefore satisfy
+every emet property in this file. Until emet can anchor an initial state, that anchor is an
+obligation on the harness — begin the trace with `clear` asserted — discharged today by
+`formal/uart_tx_props.v` and **not** by anything in this file. Where it should live in the MAS
+is issue #22; carrying it forward when that harness retires is issue #23.
 
 ### UTX-FRM-001 — Frame waveform
 

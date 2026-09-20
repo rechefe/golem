@@ -9,9 +9,12 @@ same thing to the designer, to the verifier, to SymbiYosys and to cocotb, becaus
 read the same compiled monitor.
 
 This file is the language reference. It is documentation, not a block spec: the compiler never
-reads it, so the emet blocks below are illustrations and constrain nothing. Where an
-illustration is lifted from a real block spec — the `UTX` unit block and one-line properties
-from `spec/uart_tx.md` — that file is the normative copy and this one follows it.
+reads it, so the emet blocks below are illustrations and constrain nothing. The properties
+below use invented IDs from blocks that are not specified yet, so that no property has a second
+copy here to drift from its normative home. One illustration *is* lifted from a real block
+spec — the `UTX` unit block — because the reference is written throughout against the UART's
+ports and the monitor they compile to. `spec/uart_tx.md` is its normative copy: if the two
+disagree, that file wins and this one is the bug.
 
 ## What emet is, and what it is not
 
@@ -41,8 +44,8 @@ from `spec/uart_tx.md` — that file is the normative copy and this one follows 
 An emet block is a fenced code block whose info string is exactly `emet`:
 
     ```emet
-    property UTX-IDL-001 {
-      invariant ready -> tx;
+    property SPI-BSY-002 {
+      invariant resp_valid -> !busy;
     }
     ```
 
@@ -65,8 +68,8 @@ A property is named after the requirement it checks: the requirement's ID, optio
 by `.` and a lower-case tag when one requirement needs more than one property.
 
 ```emet
-property UTX-RST-001.tx    { at 1 after clear: tx; }
-property UTX-RST-001.ready { at 1 after clear: ready; }
+property SPI-RST-001.busy { at 1 after clear: !busy; }
+property SPI-RST-001.resp { at 1 after clear: !resp_valid; }
 ```
 
 The compiler **fails** if a property's ID does not match the ID of the section it sits in.
@@ -74,7 +77,7 @@ That is what makes the traceability matrix (PLAN.md) a fact about the spec rathe
 promise: requirement ID → property labels falls out of extraction.
 
 In generated Verilog a property's label is its name with `-` and `.` replaced by `_`:
-`UTX-RST-001.tx` becomes `UTX_RST_001_tx`. Labels containing a double underscore are reserved
+`SPI-RST-001.busy` becomes `SPI_RST_001_busy`. Labels containing a double underscore are reserved
 for the compiler's own checks (`__overlap`, `__range`, `__fired`); never write one in a spec.
 
 ### What happens to the Acceptance line
@@ -560,6 +563,13 @@ The two harnesses are the verifier's lane; what the language fixes is the contra
 Named so that no one has to guess whether they exist:
 
 - No `assume`, no input constraints, no environment model.
+- **No way to constrain or anchor the initial state.** There is no `assume`, and a trigger can
+  only select edges a trace already reaches, so "the unit starts in reset" is not sayable. A
+  property set whose triggers all require some state to have been reached is vacuously
+  satisfied by a design that never reaches it, and emet cannot rule that design out. A
+  requirement in that position must say in a **Note** where its anchor comes from and that the
+  anchor is an obligation on the harness — see `UTX-HSK-004` in `spec/uart_tx.md`, which is
+  the worked example of the hole. The harnesses are the verifier's lane.
 - No `$past` and no look-back operators; no `rose`/`fell`.
 - One clock per unit; no clock-domain-crossing properties.
 - No liveness: every pattern is a safety property, and "eventually" is `within` with a

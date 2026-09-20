@@ -25,6 +25,11 @@ renumbered.
   directly under the requirement, or, only where emet cannot express the check, a prose
   **Acceptance** line. Never both, never neither.
 
+A requirement may also carry one or more **Note** paragraphs: prose that says how to read its
+check, or records a consequence of it. A Note is explanatory and is **never itself a check** —
+nothing in it is proven. A claim that needs proving belongs in a Statement and a check, in this
+requirement or another one.
+
 **Timing** is cycle-exact and uses these terms:
 
 - *Edge e*: the e-th rising edge of `clock`.
