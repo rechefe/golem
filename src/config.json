@@ -16,8 +16,8 @@
   "PL_TARGET_DENSITY_PCT": 60,
 
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
-  "//": "The value is in nanoseconds, so 20ns == 50MHz.",
-  "CLOCK_PERIOD": 20,
+  "//": "The value is in nanoseconds, so 20.833ns == 48MHz (TOP-CLK-001).",
+  "CLOCK_PERIOD": 20.833,
 
   "//": "Skip Magic DRC while hardening: on a 6x4 die it runs for hours on CI runners, and for",
   "//": "IHP CMOS5L the signoff DRC is the KLayout SG13CMOS5L deck run by the precheck job.",

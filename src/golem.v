@@ -210,7 +210,7 @@ module tt_um_rechefe_golem (
     wire [7:0] _23;
     assign _12 = 8'b00000000;
     assign _21 = _19[0:0];
-    assign _17 = 16'b0000000110110001;
+    assign _17 = 16'b0000000110100001;
     assign _4 = uio_in;
     assign _16 = _4[0:0];
     assign _6 = ui_in;
