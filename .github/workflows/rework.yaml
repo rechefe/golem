@@ -41,9 +41,10 @@ concurrency:
 
 permissions:
   contents: read
-  actions: write
-  issues: write
-  pull-requests: write
+  actions: write        # gh workflow run
+  issues: write         # read the issue's labels
+  pull-requests: write  # find the PR, comment on it
+  statuses: write       # the pending `reviewer` marker below IS the per-commit dedup token
 
 jobs:
   next:

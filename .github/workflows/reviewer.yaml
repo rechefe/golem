@@ -168,7 +168,12 @@ jobs:
       # red instead of leaving the check dangling, which is what stranded PR #5. A *cancelled*
       # run reports nothing, because a newer run is about to.
       - name: Report the verdict on the PR head
-        if: '!cancelled() && steps.pr.outputs.skip != ''true'''
+        # `always()`, not `!cancelled()`. A cancelled job -- the 45-minute backstop, a manual
+        # cancel -- must still report, because `rework.yaml` counts *any* `reviewer` status as
+        # "already handled", including the `pending` marker it posts before dispatching. A run
+        # that ends without reporting therefore leaves that marker as a permanent pending: no
+        # verdict, and nothing will ever dispatch another review for that commit.
+        if: always() && steps.pr.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.pr.outputs.sha }}
