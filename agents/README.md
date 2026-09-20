@@ -98,8 +98,13 @@ Four details carry the design:
   cancelled job and a *commit status* from the dispatched one — and which of those branch
   protection honours when they disagree is not established. A cancelled check run outranking a
   green status is the unmergeable-PR mode this design exists to remove. Dispatch-only leaves
-  exactly one signal per commit. The dedup checks for an in-flight reviewer run as well as a
-  posted status, since the status only appears when a review ends.
+  exactly one signal per commit. The dedup token is a `pending` status `rework.yaml` posts
+  *before* dispatching: the verdict status only exists once a review ends, and a query for
+  reviewer runs in flight cannot be scoped to one PR — `gh run list` does not expose a run's
+  `workflow_dispatch` inputs — so a repo-wide one would silently skip the second PR to go
+  green inside a 45-minute review and leave it with no review and no way to get one. The
+  marker also means the required check reads *pending* while the review runs, rather than
+  being absent.
 - **Only a real `request_changes` sends the agent back.** A reviewer that finished without a
   verdict — an OIDC 401, a timeout — did not judge the work, and charging that to the issue's
   three attempts would march a sound PR to `status:stuck` with nothing wrong in it. That case

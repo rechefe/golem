@@ -77,20 +77,30 @@ jobs:
 
           if [ "$CONCLUSION" = success ]; then
             # Every PR that goes green gets reviewed, not only an agent's -- `reviewer.yaml` is
-            # dispatch-only, so this is the sole way any review starts. Once per commit: the
-            # `reviewer` status is posted at the end of a review, so check for a run in flight
-            # too, or a `ci` re-run would start a second one.
+            # dispatch-only, so this is the sole way any review starts.
+            #
+            # Once per commit, and the dedup token is a `pending` status posted here, before
+            # the dispatch. The verdict status only exists once a review *ends*, so without a
+            # marker a `ci` re-run would start a second review; and a query for reviewer runs
+            # in flight cannot be scoped to this PR at all, since `gh run list` does not expose
+            # a run's `workflow_dispatch` inputs -- a repo-wide one would silently skip the
+            # second PR to go green inside a 45-minute review and leave it unreviewable.
             seen=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
                      --jq '[.statuses[] | select(.context=="reviewer")] | length')
-            live=$(gh run list -R "$REPO" -w reviewer.yaml --limit 20 \
-                     --json status,databaseId \
-                     --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length')
-            if [ "$seen" != 0 ] || [ "$live" != 0 ]; then
-              echo "PR #$num: reviewer status=$seen, in-flight runs=$live -- not dispatching."
+            if [ "$seen" != 0 ]; then
+              echo "PR #$num already has a reviewer status on $HEAD_SHA -- not dispatching."
               exit 0
             fi
             echo "ci green on PR #$num -> reviewer"
-            gh workflow run reviewer.yaml -R "$REPO" -f pr="$num"
+            gh api "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state=pending -f context=reviewer -f description="Review queued"
+            if ! gh workflow run reviewer.yaml -R "$REPO" -f pr="$num"; then
+              # Never leave the marker behind without a review coming: a `pending` nothing can
+              # clear is the dangling required check this whole design exists to remove.
+              gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context=reviewer \
+                -f description="Could not dispatch the reviewer; re-run it by hand"
+              exit 1
+            fi
             exit 0
           fi
 

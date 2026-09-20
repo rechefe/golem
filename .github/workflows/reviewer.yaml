@@ -120,6 +120,14 @@ jobs:
       - name: Review
         id: review
         if: steps.pr.outputs.skip != 'true'
+        # The timeout belongs on this step, not on the job. A job that exceeds
+        # `timeout-minutes` is *cancelled*, and cancellation skips every remaining step
+        # whatever its `if:` -- so a review that overran posted no status at all, leaving the
+        # required check dangling: the failure mode this design exists to remove, reached by
+        # the one path nobody watches. A step timeout fails the step and the job carries on,
+        # so `Report the verdict` still runs and reports red. The job keeps a slightly longer
+        # timeout as a backstop against a hang outside this step.
+        timeout-minutes: 40
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
