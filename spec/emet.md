@@ -110,7 +110,7 @@ property *fires* at every edge k ≥ 2 at which the trigger is true. A firing ca
 
 - `$n` — the value of the pattern's count expression at edge k, latched. It never changes
   during the firing, so `$n` is a property of edge k and not of the signals it was computed
-  from. `at`, `within` and `hold` have a count; `stable` does not, and has no `$n`.
+  from.
 - `$t` — the number of edges since the firing edge: at edge k+j, `$t` is j. `$t` is 1 at the
   first edge of the firing's window.
 - one register per `sample` declaration, holding that expression's value at edge k.
