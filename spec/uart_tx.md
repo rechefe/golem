@@ -6,9 +6,10 @@ GDS flow end to end. It will be replaced by a sequencer program once the sequenc
 Transmits one byte as an 8N1 frame (1 start bit, 8 data bits LSB first, 1 stop bit, no parity)
 with a programmable bit period.
 
-Checks in this file are written in emet (`emet.md`); `UTX-FRM-002` is the one requirement that
-keeps a prose **Acceptance** line, and says below why it must. **Note** paragraphs are
-explanatory and never checks, as `README.md` defines them.
+Checks in this file are written in emet (`emet.md`); the two requirements that keep a prose
+**Acceptance** line are `UTX-RST-002` and `UTX-FRM-002`, and each says below why it must. Both
+are about the harness rather than the block. **Note** paragraphs are explanatory and never
+checks, as `README.md` defines them.
 
 ## Interface
 
@@ -67,6 +68,34 @@ property UTX-RST-001.ready { at 1 after clear: ready; }
 **Note**: the trigger is the reset itself, and a firing is cancelled when `clear` is still
 true at the next edge, so the check lands on the first edge after the *last* edge of a run of
 `clear` — which is what the statement means by "the first edge after".
+
+### UTX-RST-002 — Traces begin in reset
+
+**Statement**: In every trace presented to a checker of this block, `clear = 1` is sampled at
+edge 1 and at edge 2. A harness may hold `clear` for longer; the anchor is those two edges.
+
+**Acceptance**: every harness for this block constrains `clear` so, and therefore rejects a
+substitute design that holds `ready = 0` and `tx = 0` at edges 1, 2 and 3 whatever its inputs
+and follows the rest of this file from edge 4 on. A harness under which that design passes has
+not anchored the trace and does not check this block.
+
+**This requirement has no emet block, and must not be given one.** It constrains the traces a
+harness may present, not the behaviour of the block within a trace, and emet has no `assume`
+(`emet.md`, "What emet is, and what it is not"). `README.md`, "Initial-state anchor", says why
+every block spec with emet properties carries a requirement of this shape.
+
+**Note**: *edge 2*, and not edge 1 alone, is what emet needs. No firing happens at edge 1
+(`emet.md`, "The execution model"), so `clear` at edge 1 alone triggers nothing and UTX-RST-001
+never fires. With `clear` at edges 1 and 2, UTX-RST-001 fires at edge 2 and its check lands at
+the first edge after the last edge of the initial `clear` run — edge 3 if the harness releases
+`clear` there.
+
+**Note**: this is what gives UTX-HSK-004 a base case, and with it the whole file. UTX-RST-001
+puts `ready = 1` at the first edge after the initial `clear` run; UTX-HSK-004 arms there and
+pins `ready` to the next accept edge; UTX-HSK-002 and UTX-HSK-003 carry it across a frame and
+hand it back at k+10T+1, where UTX-HSK-004 re-arms. Every edge after the initial `clear` run is
+covered, so "a design that holds `ready = 0` until the first `clear`" — which satisfies every
+emet property in this file on its own — is rejected by UTX-RST-001 instead.
 
 ### UTX-IDL-001 — Idle line is high
 
@@ -139,15 +168,18 @@ went high through the next accept edge. UTX-RST-001 anchors it at the first edge
 `clear` edge and UTX-HSK-003 restores it at k+10T+1, where this property re-arms. So from any
 edge at which `ready = 1`, every later edge at which no frame is in progress is covered.
 
-**Note**: *from any edge at which `ready = 1`* is the whole of the claim, and this file does
-not say that such an edge exists. Every trigger here requires `ready = 1`, directly or through
-`accept`; UTX-RST-001 supplies one only at an edge that follows a `clear` edge, and emet has
-no `assume` with which to require that a trace contains one (`emet.md`, "Limitations of v0").
-A design that held `ready = 0` from edge 1 until the first `clear` would therefore satisfy
-every emet property in this file. Until emet can anchor an initial state, that anchor is an
-obligation on the harness — begin the trace with `clear` asserted — discharged today by
-`formal/uart_tx_props.v` and **not** by anything in this file. Where it should live in the MAS
-is issue #22; carrying it forward when that harness retires is issue #23.
+**Note**: *from any edge at which `ready = 1`* is the whole of the claim, so this property is
+only as strong as the guarantee that such an edge exists. Every trigger in this file requires
+`ready = 1`, directly or through `accept`; UTX-RST-001 supplies one only at an edge that
+follows a `clear` edge, and emet has no `assume` with which to require that a trace contains
+one (`emet.md`, "Limitations of v0"). The edge is supplied instead by UTX-RST-002, which puts
+`clear` at edges 1 and 2 of every trace: UTX-RST-001 fires at edge 2, so `ready = 1` at the
+first edge after the initial `clear` run — edge 3 if the harness releases `clear` there. That
+anchor is an obligation on the harness, stated as a requirement so that it is traceable and
+cannot be dropped silently; `README.md`, "Initial-state anchor", says why it lives there rather
+than in emet. Carrying it forward when `formal/uart_tx_props.v` retires is issue #23 — note
+that UTX-RST-002 asks for two edges of `clear`, where that harness assumes one
+(`formal/uart_tx_props.v:32`), because it asserts `ready` directly and does not need a firing.
 
 ### UTX-FRM-001 — Frame waveform
 

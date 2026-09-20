@@ -39,11 +39,32 @@ requirement or another one.
 **Reset**: all blocks use a synchronous, active-high `clear`. "After clear" means at every
 edge following an edge at which `clear = 1` was sampled, until the block's state changes.
 
+**Initial-state anchor**: an emet check can only constrain edges a trace actually reaches, and
+emet has no way to require that a trace reaches any particular edge (`emet.md`, "Limitations of
+v0"). A property set whose triggers all require some state to have been reached is therefore
+satisfied vacuously by a design that never reaches it. Closing that hole is an obligation on
+the **harness** and not on the block: every harness that checks a block spec, formal or
+simulation, must begin every trace with that block's reset asserted.
+
+The obligation is written down and not left to each harness to remember. **Every block spec
+that carries emet properties states it as its own requirement** — an ID in the block's `RST`
+area, a Statement that says at which edges the block's reset port is asserted, and a prose
+**Acceptance** line. It never carries an emet block, for the reason `UTX-FRM-002` does not: it
+constrains the harness rather than the trace, and emet has no `assume`. `UTX-RST-002` in
+`uart_tx.md` is the worked example. A block spec with emet properties and no anchor
+requirement is a spec bug; so is a harness that drops the constraint, and because the anchor is
+a requirement it is in the traceability matrix, so dropping it removes a requirement's only
+check and the reviewer reads it as a weakening.
+
+A block spec with no emet properties — `top.md` today — needs no anchor requirement: it has no
+triggered check for an unreached state to make vacuous. It acquires one when it acquires a
+`unit` block.
+
 **emet**: the property language, defined in `emet.md`. A property block is a fenced ```` ```emet ````
 block sitting directly under the requirement it checks; each property in it is named after that
 requirement's ID, and the compiler in `formal/emet/` turns it into the one Verilog monitor that
 both SymbiYosys and the cocotb simulation use. Where emet cannot express a check — a pin map, a
-flow constraint, a prohibition on what the harness may assume — the requirement keeps a prose
-**Acceptance** line instead. Requirements written before emet still carry Acceptance lines;
-they are converted file by file, and until a file is converted its Acceptance lines are its
-checks.
+flow constraint, a prohibition on what the harness may assume, the initial-state anchor it must
+establish — the requirement keeps a prose **Acceptance** line instead. Requirements written
+before emet still carry Acceptance lines; they are converted file by file, and until a file is
+converted its Acceptance lines are its checks.
