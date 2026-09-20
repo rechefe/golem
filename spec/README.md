@@ -9,6 +9,7 @@ checks against it; nothing here is inferred from the RTL.
 |---------------|------------------------------------------------|
 | `uart_tx.md`  | UART transmitter (Hardcaml gate block)         |
 | `top.md`      | Tiny Tapeout top-level pin mapping             |
+| `emet.md`     | emet: the property language checks are written in (not a block) |
 
 ## Conventions
 
@@ -20,7 +21,9 @@ renumbered.
 
 - **ID** and a one-line title.
 - **Statement**: one behaviour, in terms of the block's named ports.
-- **Acceptance**: the observable check that proves it.
+- **Check**: the observable check that proves it — an **emet** block (`emet.md`) sitting
+  directly under the requirement, or, only where emet cannot express the check, a prose
+  **Acceptance** line. Never both, never neither.
 
 **Timing** is cycle-exact and uses these terms:
 
@@ -31,5 +34,11 @@ renumbered.
 **Reset**: all blocks use a synchronous, active-high `clear`. "After clear" means at every
 edge following an edge at which `clear = 1` was sampled, until the block's state changes.
 
-**emet**: property blocks written in emet (from milestone 2026-10-10) sit directly under the
-requirement they check. Until then, each requirement's Acceptance line is the property.
+**emet**: the property language, defined in `emet.md`. A property block is a fenced ```` ```emet ````
+block sitting directly under the requirement it checks; each property in it is named after that
+requirement's ID, and the compiler in `formal/emet/` turns it into the one Verilog monitor that
+both SymbiYosys and the cocotb simulation use. Where emet cannot express a check — a pin map, a
+flow constraint, a prohibition on what the harness may assume — the requirement keeps a prose
+**Acceptance** line instead. Requirements written before emet still carry Acceptance lines;
+they are converted file by file, and until a file is converted its Acceptance lines are its
+checks.
