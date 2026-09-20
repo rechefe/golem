@@ -209,8 +209,12 @@ jobs:
             # `|| true`: the label is created by setup.yaml, which is `workflow_dispatch`-only
             # and must be re-run after this merges. The ping is what matters and must not be
             # lost to a missing label.
-            if gh pr view "$NUM" -R "$GITHUB_REPOSITORY" --json labels \
-                 --jq '[.labels[].name] | index("status:owner") // "no"' | grep -qv '^no$'; then
+            # Not `| grep -q`: it exits at the first match, which can SIGPIPE `gh`, and
+            # under `pipefail` that takes the else branch -- posting the second ping this
+            # guard exists to prevent.
+            queued=$(gh pr view "$NUM" -R "$GITHUB_REPOSITORY" --json labels \
+                       --jq '[.labels[].name] | index("status:owner") // "no"')
+            if [ "$queued" != no ]; then
               echo "PR #$NUM is already in the owner's queue; not pinging again."
               exit 0
             fi

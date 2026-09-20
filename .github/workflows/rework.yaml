@@ -64,11 +64,17 @@ jobs:
           # Look the PR up by head *branch*. `workflow_run.pull_requests` is empty on some runs
           # and a head-SHA match breaks the moment the branch is pushed again while `ci` runs.
           # `--head` matches the branch *name*, so a fork PR on a branch of the same name
-          # collides with ours. Filter to PRs whose head is this repository.
+          # collides with ours, and two internal PRs can share a head branch. Select on the
+          # head repository *and* the exact commit this run tested: that is both filters and
+          # the has-it-moved-on check in one, with no dependence on list order.
           pr=$(gh pr list -R "$REPO" --state open --head "$HEAD_BRANCH" \
                  --json number,headRefName,headRefOid,author,body,isDraft,headRepositoryOwner,headRepository \
-                 --jq "[.[] | select((.headRepositoryOwner.login + \"/\" + .headRepository.name) == \"$REPO\")] | .[0] // empty")
-          if [ -z "$pr" ]; then echo "No open PR for $HEAD_BRANCH -- nothing to do."; exit 0; fi
+                 --jq "[.[] | select((.headRepositoryOwner.login + \"/\" + .headRepository.name) == \"$REPO\"
+                                     and .headRefOid == \"$HEAD_SHA\")] | .[0] // empty")
+          if [ -z "$pr" ]; then
+            echo "No open PR in this repo at $HEAD_BRANCH@$HEAD_SHA -- nothing to do."
+            exit 0
+          fi
 
           num=$(jq -r .number <<<"$pr")
           author=$(jq -r .author.login <<<"$pr")
@@ -77,12 +83,6 @@ jobs:
 
           if [ "$(jq -r .isDraft <<<"$pr")" = true ]; then
             echo "PR #$num is a draft; nothing here drives one."
-            exit 0
-          fi
-
-          # The branch may have moved on since this run started; act on what it ran.
-          if [ "$(jq -r .headRefOid <<<"$pr")" != "$HEAD_SHA" ]; then
-            echo "PR #$num has moved past $HEAD_SHA; a newer ci run will carry it."
             exit 0
           fi
 
@@ -96,11 +96,25 @@ jobs:
             # in flight cannot be scoped to this PR at all, since `gh run list` does not expose
             # a run's `workflow_dispatch` inputs -- a repo-wide one would silently skip the
             # second PR to go green inside a 45-minute review and leave it unreviewable.
-            seen=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
-                     --jq '[.statuses[] | select(.context=="reviewer")] | length')
-            if [ "$seen" != 0 ]; then
-              echo "PR #$num already has a reviewer status on $HEAD_SHA -- not dispatching."
-              exit 0
+            # A `pending` marker is not a verdict. Treating the two alike wedges a commit
+            # whenever a review ends without reporting -- cancelled, or skipped because the PR
+            # went to draft after the marker was posted -- since nothing would ever dispatch
+            # another. A marker older than the reviewer's own ceiling belongs to a review that
+            # no longer exists, so it is replaced rather than honoured.
+            st=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
+                   --jq '[.statuses[] | select(.context=="reviewer")] | .[0] // empty')
+            if [ -n "$st" ]; then
+              state=$(jq -r .state <<<"$st")
+              if [ "$state" != pending ]; then
+                echo "PR #$num already has a reviewer verdict ($state) on $HEAD_SHA."
+                exit 0
+              fi
+              age=$(( $(date -u +%s) - $(date -u -d "$(jq -r .created_at <<<"$st")" +%s) ))
+              if [ "$age" -lt 3300 ]; then
+                echo "PR #$num has a review in flight (marker ${age}s old) -- not dispatching."
+                exit 0
+              fi
+              echo "PR #$num: reviewer marker is ${age}s old, past the 45-minute ceiling; re-dispatching."
             fi
             echo "ci green on PR #$num -> reviewer"
             gh api "repos/$REPO/statuses/$HEAD_SHA" \

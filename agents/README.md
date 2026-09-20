@@ -15,7 +15,7 @@ not this one.
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `workflow_dispatch` with a PR number, dispatched by `rework.yaml` once `ci` is green | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
-| `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
+| `ci.yaml` | every pull request that is not a draft, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
 | `rework.yaml` | `workflow_run` completed for `ci` | — | Half the loop: `ci` red sends an agent PR back to its agent, `ci` green sends it to the reviewer. The verdict half lives in `reviewer.yaml`. Acts only on branches `<role>/…` opened by `claude[bot]`. |
 | `gds.yaml` | `main`, nightly at 02:00 UTC, or `workflow_dispatch` — **not** pull requests | — | Hardening, precheck, gate-level test. About an hour on a 6x4 die, which is why no PR waits on it; run it by hand on a PR that plausibly moves area or timing. It must not be a required status check. Its `viewer` job deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build workflows — and is guarded on `ref == refs/heads/main`. |
 | `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | The datasheet. `docs.yaml`, `fpga.yaml` and `gds.yaml`'s non-`viewer` jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
@@ -345,7 +345,8 @@ and variables → Actions → Variables) and stops dispatching once it is reache
 Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier` run on Sonnet
 and escalate to Opus on their third attempt.
 
-CI is paced too. `ci` runs on every pull request and on `main`, but `gds` — hardening plus
+CI is paced too. `ci` runs on every pull request that is not a draft — the blocked protocol
+leans on that, and all three role files tell an agent so — and on `main`, but `gds` — hardening plus
 precheck, about an hour on a 6x4 die — runs on `main`, nightly, and on manual
 `workflow_dispatch`, and **not on pull requests at all**: an hour of latency in every rework
 round is the largest tax the loop can carry, and area and timing are properties of `main`
@@ -420,8 +421,15 @@ git history and the open issues before trusting it.
      was not suppressed on either. The earlier claim here — checks arrive on `opened` and go
      stale — was wrong. Take the refresh as observed rather than guaranteed: n is 2, both are
      `docs`/`gds` runs, `ci` itself has never been seen to run on a `GITHUB_TOKEN`
-     `synchronize`, and the documented rule predicts the opposite. Nothing here rests on it —
-     `opened` alone is already more than `on: push:` gave.
+     `synchronize`, and the documented rule predicts the opposite.
+
+     **The rework loop rests on it from round two onwards.** `ci` red dispatches the agent, the
+     agent pushes a fix under `GITHUB_TOKEN`, and if that push starts no `ci` run then
+     `rework.yaml` never wakes, the new head carries no `reviewer` status, and there is no
+     other door back in — one round and done, which is the outcome the loop exists to fix. The
+     first green agent PR after `rework.yaml` merges is the test. If it stalls after one round,
+     this is why, and the manual nudge is `gh workflow run ci.yaml --ref <branch>` or a push
+     from an identity that is not `GITHUB_TOKEN`.
    - **Why the halves of one push differ is unexplained.** The same `git push` started a
      `pull_request` run and no `push` run. Suppression accounts for the second and not the
      first. Recorded as an observation, not a mechanism; nothing above depends on a reason.
