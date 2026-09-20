@@ -16,8 +16,9 @@ not this one.
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
 | `reviewer.yaml` | `pull_request_target`, or `workflow_dispatch` with a PR number | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
-| `rework.yaml` | `workflow_run` completed for `ci` or `reviewer` | — | Closes the loop: dispatches the next actor on an agent PR, or hands a green and approved one to the owner. Acts only on branches `<role>/…` opened by `claude[bot]`. |
-| `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
+| `rework.yaml` | `workflow_run` completed for `ci` | — | Half the loop: `ci` red sends an agent PR back to its agent, `ci` green sends it to the reviewer. The verdict half lives in `reviewer.yaml`. Acts only on branches `<role>/…` opened by `claude[bot]`. |
+| `gds.yaml` | `main`, nightly at 02:00 UTC, or `workflow_dispatch` — **not** pull requests | — | Hardening, precheck, gate-level test. About an hour on a 6x4 die, which is why no PR waits on it; run it by hand on a PR that plausibly moves area or timing. It must not be a required status check. Its `viewer` job deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build workflows — and is guarded on `ref == refs/heads/main`. |
+| `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | The datasheet. `docs.yaml`, `fpga.yaml` and `gds.yaml`'s non-`viewer` jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
@@ -39,11 +40,11 @@ flowchart TD
     agent -->|"pushes a branch, opens a PR"| pr(["pull request"])
     pr --> checks["ci.yaml"]
     checks --> rw["rework.yaml"]
-    rw -->|"ci green: dispatches reviewer"| rev["reviewer.yaml"]
-    rev --> rw2["rework.yaml"]
     rw -->|"ci red: dispatches the agent"| agent
-    rw2 -->|"request_changes: dispatches the agent"| agent
-    rw2 -->|"approve: labels status:owner, pings"| gate(["owner merges"])
+    rw -->|"ci green: dispatches the reviewer"| rev["reviewer.yaml"]
+    rev -->|"request_changes: dispatches the agent"| agent
+    rev -->|"approve: labels status:owner, pings"| gate(["owner merges"])
+    agent -->|"outcome: blocked"| blocked(["draft PR, status:blocked, orchestrator decides"])
     agent -->|"4th attempt"| stuck(["status:stuck, owner pinged"])
     gate --> done(["issue closed"])
 ```
@@ -62,23 +63,35 @@ the retry lands on the next run either way, and polling in between costs budget 
 information.
 
 **What it is now.** `rework.yaml` wakes on `workflow_run: completed` for `ci` and `reviewer`,
-identifies the agent PR by its head commit, and dispatches the next actor within seconds:
+identifies the agent PR by its head branch, and dispatches the next actor within seconds:
 
-| It wakes on | It does |
-|---|---|
-| `ci` green | dispatch `reviewer.yaml` on that PR |
-| `ci` red | dispatch `agent.yaml` on the PR's issue, same role |
-| `reviewer` `request_changes` (job fails) | dispatch `agent.yaml`, same role |
-| `reviewer` `approve` (job passes) | label the PR `status:owner` and ping the owner |
+| Where | On | It does |
+|---|---|---|
+| `rework.yaml` | `ci` red | dispatch `agent.yaml` on the PR's issue, same role |
+| `rework.yaml` | `ci` green | dispatch `reviewer.yaml` on that PR |
+| `reviewer.yaml` | `request_changes`, or no verdict at all | dispatch `agent.yaml`, same role |
+| `reviewer.yaml` | `approve` | label the PR `status:owner` and ping the owner |
 
 So the owner's queue is only ever PRs that are green **and** approved.
 
-Two details carry the design:
+**The verdict half lives in `reviewer.yaml`, not in `rework.yaml`.** A reviewer run reaches
+`workflow_run` with no reliable handle on its PR: a run `rework.yaml` dispatched points at the
+default branch, not the PR, and `workflow_run.pull_requests` comes back empty on some runs
+(35470154786, 35470495609 and 35471288143 are three). `reviewer.yaml` has already resolved the
+PR to post its status, so the verdict acts there. `rework.yaml` looks its PR up by **head
+branch** for the same reason — `pull_requests` is unreliable, and a head-SHA match breaks the
+moment the branch is pushed again while `ci` is still running.
+
+Three details carry the design:
 
 - **It dispatches, it does not label.** Adding `agent:<role>` from a workflow would be a
   `GITHUB_TOKEN` event, and GitHub starts no run for one (gap 3) — the loop would silently do
   nothing. `workflow_dispatch` is one of the two events exempt from that rule, and both
   `agent.yaml` and `reviewer.yaml` accept it.
+- **A commit is reviewed once.** `reviewer.yaml` still runs on `pull_request_target`, so the
+  owner's own PRs are reviewed too; `rework.yaml` therefore dispatches a review only when no
+  `reviewer` status exists on that head yet, and `reviewer.yaml`'s per-PR `concurrency` group
+  cancels a duplicate that slips through the gap while a review is still running.
 - **`reviewer.yaml` had to gain that input.** It is `pull_request_target`, and no
   `pull_request_target` run was created for either of the agent's `GITHUB_TOKEN` pushes on
   `spec/3-workload-study` (gap 3 again). Waiting for the event would have meant a fix push is
@@ -111,6 +124,8 @@ stateDiagram-v2
 | `status:ready` | Fully specified, waiting for dispatch. |
 | `status:running` | An agent has it. |
 | `status:stuck` | 3 attempts used; the owner is pinged. |
+| `status:blocked` | An agent reported the issue cannot be done as written. The orchestrator's step 3 decides. |
+| `status:owner` | On a PR: green and approved, waiting for the owner. |
 | `agent:spec` / `agent:designer` / `agent:verifier` | Dispatch. Adding it **starts a run**. |
 | `spec:behaviour` | A spec PR that waits for the owner. |
 
@@ -118,28 +133,30 @@ On the label path, adding `agent:<role>` is the only thing that starts work — 
 `workflow_dispatch` is the other way in, and bypasses the guard entirely; see the trust
 boundary below. `status:*` labels are bookkeeping —
 adding one fires `agent.yaml` too, but its guard rejects anything not starting with `agent:`,
-so the run ends as `skipped` — though it still appears in the run list the budget counts. See
-gap 6.
+so the run ends as `skipped`. Those rejected runs used to be charged against the daily budget;
+the orchestrator's step 1 now counts only runs that started an agent. See gap 6.
 
 ## Inside the orchestrator's daily run
 
 ```mermaid
 flowchart TD
-    a["1. Budget: count agent runs in the last 24h"] --> d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
-    d --> b{"at AGENT_RUNS_PER_DAY?"}
-    b -->|"yes — skip steps 3 and 4"| g
-    b -->|no| e["3. Rework: status:running with a red PR or request_changes, re-add agent:ROLE"]
-    e --> f["4. Dispatch: status:ready, oldest milestone first, one issue per role"]
-    f --> g["5. Plan ahead: file missing issues from PLAN.md and merged spec only"]
-    g --> h["6. Spec batch: keep one PR open from spec-provisional to main"]
+    a["1. Budget: count agent runs in the last 24h that started an agent"] --> d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
+    d --> c["3. Blocked: read each status:blocked reason — file the prerequisite, rewrite the issue, or ask the owner. Never re-dispatch unchanged"]
+    c --> b{"at AGENT_RUNS_PER_DAY?"}
+    b -->|"yes — skip steps 4 and 5"| g
+    b -->|no| e["4. Rework: backstop for what rework.yaml's events missed"]
+    e --> f["5. Dispatch: status:ready, oldest milestone first, one issue per role. A parked status:running issue holds its role's slot — say so"]
+    f --> g["6. Plan ahead: file missing issues from PLAN.md and merged spec only"]
+    g --> h["7. Spec batch: keep one PR open from spec-provisional to main"]
 ```
 
 Two consequences worth internalising:
 
 - **One issue per role at a time.** If a spec issue is already `status:running`, no other spec
   issue is dispatched, however many are `status:ready`. Seven queued spec issues therefore
-  take about seven daily runs.
-- **Scope is not invented.** Step 5 may only draw on `PLAN.md` and requirements already merged
+  take about seven daily runs — and an issue parked on an owner decision holds the slot
+  indefinitely, which is why step 5 now says so out loud when it happens.
+- **Scope is not invented.** Step 6 may only draw on `PLAN.md` and requirements already merged
   into `spec/` on `main`.
 
 **On Sundays it has a second mode.** `orchestrator.yaml` branches on the day of the week — or
@@ -165,9 +182,12 @@ flowchart TD
     opus --> tools
     sonnet --> tools
     tools["apply lane read restrictions"] --> run["run Claude on the issue"]
-    run --> cleanup["remove agent:ROLE"]
+    run --> outcome{"structured outcome?"}
+    outcome -->|blocked| blk["label status:blocked, withdraw this run's Attempt comment, draft PR states the blocker"]
+    outcome -->|done| cleanup
+    blk --> cleanup["remove agent:ROLE"]
     cleanup --> ok{"run succeeded?"}
-    ok -->|no| back["status:running to status:ready, so it can be retried"]
+    ok -->|"no, and not blocked"| back["status:running to status:ready, so it can be retried"]
     ok -->|yes| stay["leave status:running"]
 ```
 

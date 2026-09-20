@@ -48,6 +48,7 @@ jobs:
       pull-requests: write
       issues: write
       statuses: write
+      actions: write
       id-token: write
     steps:
       - name: Resolve the PR, and refuse forks
@@ -58,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           gh pr view "$N" -R "$GITHUB_REPOSITORY" \
-            --json number,state,headRefOid,headRepository,headRepositoryOwner > /tmp/pr.json
+            --json number,state,headRefOid,headRefName,headRepository,headRepositoryOwner,author,body > /tmp/pr.json
           head_repo="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' /tmp/pr.json)"
           if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
             echo "PR from a fork ($head_repo): the reviewer agent does not run on external code. Owner review required."
@@ -67,6 +68,16 @@ jobs:
           if [ "$(jq -r .state /tmp/pr.json)" != OPEN ]; then echo "PR #$N is not open."; exit 1; fi
           echo "number=$(jq -r .number /tmp/pr.json)" >> "$GITHUB_OUTPUT"
           echo "sha=$(jq -r .headRefOid /tmp/pr.json)" >> "$GITHUB_OUTPUT"
+          branch="$(jq -r .headRefName /tmp/pr.json)"
+          role="${branch%%/*}"
+          issue="$(jq -r '.body // ""' /tmp/pr.json | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+          case "$role:$(jq -r .author.login /tmp/pr.json)" in
+            spec:claude\[bot\]|designer:claude\[bot\]|verifier:claude\[bot\]) agent=true ;;
+            *) agent=false ;;
+          esac
+          echo "role=$role"   >> "$GITHUB_OUTPUT"
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
 
       - name: Checkout main (trusted)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,4 +145,39 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
             -f state="$state" -f context=reviewer -f description="$desc" -f target_url="$RUN_URL"
           echo "reviewer/$SHA -> $state ($desc) on PR #$NUM"
-          [ "$state" = success ]
+
+      # The verdict half of the rework loop. It lives here and not in `rework.yaml` because a
+      # reviewer run reaches `workflow_run` with no usable handle on its PR -- a dispatched run
+      # points at the default branch, and `workflow_run.pull_requests` is empty on some runs.
+      # Here the PR is already resolved, so the verdict acts on it directly.
+      - name: Drive the agent PR on the verdict
+        if: always() && steps.pr.outputs.agent == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUM: ${{ steps.pr.outputs.number }}
+          ROLE: ${{ steps.pr.outputs.role }}
+          ISSUE: ${{ steps.pr.outputs.issue }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT:-}" = approve ]; then
+            gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe green and approved — ready for you. Review: $RUN_URL"
+            exit 0
+          fi
+          # request_changes, or a reviewer that crashed without a verdict: back to the agent.
+          if [ -z "${ISSUE:-}" ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe the reviewer did not approve, and this PR has no \`Closes #<issue>\` line, so the loop cannot find the agent to send it back to. Review: $RUN_URL"
+            exit 0
+          fi
+          echo "verdict '${VERDICT:-none}' on PR #$NUM -> agent ($ROLE) on issue #$ISSUE"
+          gh workflow run agent.yaml -R "$GITHUB_REPOSITORY" -f role="$ROLE" -f issue="$ISSUE"
+
+      - name: Fail on a non-approval
+        if: always()
+        env:
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+        run: '[ "${VERDICT:-}" = approve ]'
