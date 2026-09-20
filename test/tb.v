@@ -35,4 +35,15 @@ module tb ();
       .rst_n  (rst_n)     // not reset
   );
 
+  // emet monitors (issue #19): one per unit with an emet block in spec/, reaching
+  // into user_project's block instances by hierarchical reference. See
+  // formal/emet/README.md, "Reaching a unit that is not the top module".
+  // RTL sim only: a gate-level netlist doesn't preserve block-level instance
+  // names, so the hierarchical paths below wouldn't resolve (test/Makefile
+  // only defines EMET_SIM, and only compiles the generated monitors in, for
+  // GATES != yes).
+`ifdef EMET_SIM
+  `include "../formal/emet/generated/tb_emet.vh"
+`endif
+
 endmodule
