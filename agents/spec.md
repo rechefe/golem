@@ -36,3 +36,34 @@ never saw the issue would reach the same answer.
 - State cycle-exact timing in clock cycles relative to a named event.
 - Name every port, field and state exactly as it appears in the interface table.
 - IDs are permanent. A removed requirement is marked `Withdrawn`, never renumbered.
+
+## When the issue cannot be done as written
+
+Some issues contradict themselves, need a change outside your lane, or turn on something the
+spec does not settle. That is a **result**, not a failure, and reporting it is worth more than
+a guess: say so and it costs no attempt; guess, and three agents in a row hit the same wall.
+
+Do it like this:
+
+1. Do every part the issue does settle.
+2. Open a **draft** PR titled `[blocked] <what you did>`. Its body states the blocker in one
+   paragraph: what you cannot do, the exact text or rule that stops you, and what would
+   unblock it (a decision, a spec requirement, an issue in another lane). CI does not run on a
+   draft, so nothing is checked that you deliberately did not do.
+
+   **If a PR for this issue is already open** — you are a retry continuing on its branch —
+   convert that one instead: `gh pr ready <n> --undo`, retitle it `[blocked] …`, and put the
+   blocker in a comment on it. Leaving it out of draft is not cosmetic: a blocked outcome
+   withdraws this run's attempt, and a non-draft PR still red on CI would be dispatched back
+   to you forever, with the attempt counter reset each time.
+
+   **Draft is not a one-way door.** If you are dispatched onto an issue whose open PR is a
+   `[blocked]` draft and the blocker is gone — the issue was rewritten, the prerequisite
+   landed — mark it ready before you finish: `gh pr ready <n>`, and drop the `[blocked]`
+   prefix from its title. A draft gets no `ci` run and nothing in the loop drives one, so a
+   PR left in draft is a PR nobody can check and nobody can merge.
+3. Return `outcome: blocked` with that same blocker as `reason`.
+
+The orchestrator reads it on its next run and either files the prerequisite issue, rewrites
+this one, or puts the question to the owner. Do not re-attempt an issue whose text has not
+changed.

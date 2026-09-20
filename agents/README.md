@@ -14,10 +14,12 @@ not this one.
 |---|---|---|---|
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
-| `reviewer.yaml` | `pull_request_target` | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
-| `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
-| `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
+| `reviewer.yaml` | `workflow_dispatch` with a PR number, dispatched by `rework.yaml` once `ci` is green | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
+| `ci.yaml` | every pull request that is not a draft, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
+| `rework.yaml` | `workflow_run` completed for `ci` | — | Half the loop: `ci` red sends an agent PR back to its agent, `ci` green sends it to the reviewer. The verdict half lives in `reviewer.yaml`. Acts only on branches `<role>/…` opened by `claude[bot]`. |
+| `gds.yaml` | `main`, nightly at 02:00 UTC, or `workflow_dispatch` — **not** pull requests | — | Hardening, precheck, gate-level test. About an hour on a 6x4 die, which is why no PR waits on it; run it by hand on a PR that plausibly moves area or timing. It must not be a required status check. Its `viewer` job deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build workflows — and is guarded on `ref == refs/heads/main`. |
+| `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | The datasheet. `docs.yaml`, `fpga.yaml` and `gds.yaml`'s non-`viewer` jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
+| `setup.yaml` | `workflow_dispatch` only | — | Idempotent, not one-time: creates the label set and the `spec-provisional` branch everything else leans on. **Re-run it whenever a label is added to it**, or the workflow that uses that label will fail to apply it. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
 There are **five agent roles** carried by **three** workflows: `orchestrator.yaml`,
@@ -36,31 +38,98 @@ flowchart TD
     orch -->|"adds label agent:ROLE"| agent
     agent["agent.yaml: spec, designer or verifier"]
     agent -->|"pushes a branch, opens a PR"| pr(["pull request"])
-    pr --> checks["ci, gds, docs"]
-    pr --> rev["reviewer.yaml"]
-    rev --> verdict{"verdict"}
-    verdict -->|approve| gate(["owner merges"])
-    verdict -->|request_changes| orch
-    checks -->|red| orch
-    orch -->|"rework: re-adds agent:ROLE, next daily run"| agent
+    pr --> checks["ci.yaml"]
+    checks --> rw["rework.yaml"]
+    rw -->|"ci red: dispatches the agent"| agent
+    rw -->|"ci green: dispatches the reviewer"| rev["reviewer.yaml"]
+    rev -->|"request_changes: dispatches the agent"| agent
+    rev -->|"approve: labels status:owner, pings"| gate(["owner merges"])
+    agent -->|"outcome: blocked"| blocked(["draft PR, status:blocked, orchestrator decides"])
+    agent -->|"4th attempt"| stuck(["status:stuck, owner pinged"])
     gate --> done(["issue closed"])
 ```
 
-The orchestrator does **not** supervise agents. It adds a label and exits, and the **forward**
-path — push, PR, checks, review — is GitHub Actions reacting to events.
+The orchestrator does **not** supervise agents. It adds a label and exits; everything after
+that is GitHub Actions reacting to events, and `rework.yaml` is what makes the *return* path
+react too.
 
-**The return path is not.** Nothing fires on a red check or a `request_changes` verdict:
-`reviewer.yaml` merely exits non-zero, `ci.yaml` has no downstream trigger, and `agent.yaml`
-listens only for `issues: labeled` and `workflow_dispatch`. The only thing that puts an issue
-back to work is the orchestrator's **step 3, Rework**, on its *next scheduled run*. Three
-consequences follow, and they are the ones that actually bite:
+**What the return path used to be.** Nothing fired on a red check or a `request_changes`
+verdict: `reviewer.yaml` merely exited non-zero, `ci.yaml` had no downstream trigger, and
+`agent.yaml` listened only for `issues: labeled` and `workflow_dispatch`. The only thing that
+put an issue back to work was the orchestrator's **step 3, Rework**, on its *next scheduled
+run* — so a red PR sat up to ~24 hours, and a single round of review feedback cost a day and
+one of the issue's three attempts. Keeping the orchestrator alive longer fixes none of that:
+the retry lands on the next run either way, and polling in between costs budget for no
+information.
 
-- a red PR can sit up to **~24 hours** before anything touches it;
-- the retry is charged against `AGENT_RUNS_PER_DAY`;
-- it burns one of the issue's **three attempts**.
+**What it is now.** `rework.yaml` wakes on `workflow_run: completed` for `ci`,
+identifies the agent PR by its head branch, and dispatches the next actor within seconds:
 
-Keeping the orchestrator alive longer fixes none of that — the retry lands on the next run
-either way, and polling in between costs budget for no information.
+| Where | On | It does |
+|---|---|---|
+| `rework.yaml` | `ci` red | dispatch `agent.yaml` on the PR's issue, same role |
+| `rework.yaml` | `ci` green | dispatch `reviewer.yaml` on that PR |
+| `reviewer.yaml` | `request_changes` | dispatch `agent.yaml`, same role |
+| `reviewer.yaml` | no verdict at all — a crash, a timeout | ping the owner and stop; nothing is charged to the issue |
+| `reviewer.yaml` | `approve` | label the PR `status:owner` and ping the owner |
+
+So the owner's queue is only ever PRs that are green **and** approved.
+
+**The verdict half lives in `reviewer.yaml`, not in `rework.yaml`.** A reviewer run reaches
+`workflow_run` with no reliable handle on its PR: a run `rework.yaml` dispatched points at the
+default branch, not the PR, and `workflow_run.pull_requests` comes back empty on some runs
+(35470154786, 35470495609 and 35471288143 are three). `reviewer.yaml` has already resolved the
+PR to post its status, so the verdict acts there. `rework.yaml` looks its PR up by **head
+branch** for the same reason — `pull_requests` is unreliable, and a head-SHA match breaks the
+moment the branch is pushed again while `ci` is still running.
+
+Four details carry the design:
+
+- **It dispatches, it does not label.** Adding `agent:<role>` from a workflow would be a
+  `GITHUB_TOKEN` event, and GitHub starts no run for one (gap 3) — the loop would silently do
+  nothing. `workflow_dispatch` is one of the two events exempt from that rule, and both
+  `agent.yaml` and `reviewer.yaml` accept it.
+- **A commit is reviewed once, and only after `ci` is green.** `reviewer.yaml` is
+  **dispatch-only** — no PR event starts it — so `rework.yaml` is the single door in, for the
+  owner's PRs as much as an agent's. It was `pull_request_target`, and that produced a second
+  review on most agent PRs: `opened` starts one, `ci` finishes long before a 45-minute review,
+  the dedup sees no verdict yet and dispatches another, and `cancel-in-progress` kills the
+  first. Worse, it left two signals called `reviewer` on one commit — a *check run* from the
+  cancelled job and a *commit status* from the dispatched one — and which of those branch
+  protection honours when they disagree is not established. A cancelled check run outranking a
+  green status is the unmergeable-PR mode this design exists to remove. Dispatch-only leaves
+  exactly one signal per commit. The dedup token is a `pending` status `rework.yaml` posts
+  *before* dispatching: the verdict status only exists once a review ends, and a query for
+  reviewer runs in flight cannot be scoped to one PR — `gh run list` does not expose a run's
+  `workflow_dispatch` inputs — so a repo-wide one would silently skip the second PR to go
+  green inside a 45-minute review and leave it with no review and no way to get one. The
+  marker also means the required check reads *pending* while the review runs, rather than
+  being absent.
+- **Only a real `request_changes` sends the agent back.** A reviewer that finished without a
+  verdict — an OIDC 401, a timeout — did not judge the work, and charging that to the issue's
+  three attempts would march a sound PR to `status:stuck` with nothing wrong in it. That case
+  pings the owner and stops. Nor is a draft ever reviewed: a `[blocked]` PR is deliberately
+  incomplete, and `request_changes` on it would send the agent back at unchanged issue text.
+- **The reviewer had to become dispatch-only.** It was `pull_request_target`, and no such run
+  was created for either of the agent's `GITHUB_TOKEN` pushes on `spec/3-workload-study` (gap 3
+  again) — so waiting for the event would mean a fix push is never re-reviewed, one round and
+  done. Dispatching it explicitly is what makes the ping-pong possible at all.
+
+**The loop cannot run away**, and the attempt counter is the only thing making that true, so
+two rules protect it. `agent.yaml` counts `Attempt N/3` comments on the issue and, past the
+cap, labels it `status:stuck` and pings the owner instead of running. A blocked outcome
+withdraws its own attempt comment — free to report a wall — and that is a hole in the bound
+unless the PR really is a draft: a non-draft PR left red would come back through `ci` red →
+agent → blocked → counter reset, forever. So the withdrawal happens only when a draft PR for
+that issue exists, and `rework.yaml` refuses to dispatch against an issue labelled
+`status:blocked` at all.
+
+Rework dispatches do not pass through `AGENT_RUNS_PER_DAY`: that gate is the orchestrator's
+step 1 and governs *new* work only, so finishing something already started is bounded by the
+attempt cap rather than by the daily budget. They are exempt from the **gate**, not from the
+**count** — step 1 counts every non-`skipped` `agent.yaml` run, rework's included, and has no
+way to tell them apart. A busy day of rework therefore spends the next day's dispatch budget.
+Defensible, since those runs cost the same; not what "exempt" on its own would imply.
 
 ## An issue's life
 
@@ -83,6 +152,8 @@ stateDiagram-v2
 | `status:ready` | Fully specified, waiting for dispatch. |
 | `status:running` | An agent has it. |
 | `status:stuck` | 3 attempts used; the owner is pinged. |
+| `status:blocked` | An agent reported the issue cannot be done as written. The orchestrator's step 3 decides. |
+| `status:owner` | On a PR: green and approved, waiting for the owner. |
 | `agent:spec` / `agent:designer` / `agent:verifier` | Dispatch. Adding it **starts a run**. |
 | `spec:behaviour` | A spec PR that waits for the owner. |
 
@@ -90,28 +161,30 @@ On the label path, adding `agent:<role>` is the only thing that starts work — 
 `workflow_dispatch` is the other way in, and bypasses the guard entirely; see the trust
 boundary below. `status:*` labels are bookkeeping —
 adding one fires `agent.yaml` too, but its guard rejects anything not starting with `agent:`,
-so the run ends as `skipped` — though it still appears in the run list the budget counts. See
-gap 6.
+so the run ends as `skipped`. Those rejected runs used to be charged against the daily budget;
+the orchestrator's step 1 now counts only runs that started an agent. See gap 6.
 
 ## Inside the orchestrator's daily run
 
 ```mermaid
 flowchart TD
-    a["1. Budget: count agent runs in the last 24h"] --> d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
-    d --> b{"at AGENT_RUNS_PER_DAY?"}
-    b -->|"yes — skip steps 3 and 4"| g
-    b -->|no| e["3. Rework: status:running with a red PR or request_changes, re-add agent:ROLE"]
-    e --> f["4. Dispatch: status:ready, oldest milestone first, one issue per role"]
-    f --> g["5. Plan ahead: file missing issues from PLAN.md and merged spec only"]
-    g --> h["6. Spec batch: keep one PR open from spec-provisional to main"]
+    a["1. Budget: count agent runs in the last 24h that started an agent"] --> d["2. Stuck check: 3 attempts and no merged PR, label status:stuck, ping owner"]
+    d --> c["3. Blocked: read each status:blocked reason — file the prerequisite, rewrite the issue, or ask the owner. Never re-dispatch unchanged"]
+    c --> b{"at AGENT_RUNS_PER_DAY?"}
+    b -->|"yes — skip steps 4 and 5"| g
+    b -->|no| e["4. Rework: backstop for what rework.yaml's events missed"]
+    e --> f["5. Dispatch: status:ready, oldest milestone first, one issue per role. A parked status:running issue holds its role's slot — say so"]
+    f --> g["6. Plan ahead: file missing issues from PLAN.md and merged spec only"]
+    g --> h["7. Spec batch: keep one PR open from spec-provisional to main"]
 ```
 
 Two consequences worth internalising:
 
 - **One issue per role at a time.** If a spec issue is already `status:running`, no other spec
   issue is dispatched, however many are `status:ready`. Seven queued spec issues therefore
-  take about seven daily runs.
-- **Scope is not invented.** Step 5 may only draw on `PLAN.md` and requirements already merged
+  take about seven daily runs — and an issue parked on an owner decision holds the slot
+  indefinitely, which is why step 5 now says so out loud when it happens.
+- **Scope is not invented.** Step 6 may only draw on `PLAN.md` and requirements already merged
   into `spec/` on `main`.
 
 **On Sundays it has a second mode.** `orchestrator.yaml` branches on the day of the week — or
@@ -137,9 +210,12 @@ flowchart TD
     opus --> tools
     sonnet --> tools
     tools["apply lane read restrictions"] --> run["run Claude on the issue"]
-    run --> cleanup["remove agent:ROLE"]
+    run --> outcome{"structured outcome?"}
+    outcome -->|blocked| blk["label status:blocked, withdraw this run's Attempt comment, draft PR states the blocker"]
+    outcome -->|done| cleanup
+    blk --> cleanup["remove agent:ROLE"]
     cleanup --> ok{"run succeeded?"}
-    ok -->|no| back["status:running to status:ready, so it can be retried"]
+    ok -->|"no, and not blocked"| back["status:running to status:ready, so it can be retried"]
     ok -->|yes| stay["leave status:running"]
 ```
 
@@ -262,15 +338,19 @@ Two more deliberate choices:
 ## Budget and pacing
 
 Half of a Max plan's weekly usage, paced to roughly one seventh per day. The orchestrator
-counts `agent.yaml` runs in the last 24 hours against the repository variable
-`AGENT_RUNS_PER_DAY` (default 6) and stops dispatching once it is reached.
+counts `agent.yaml` runs in the last 24 hours — those not rejected by the workflow's guard —
+against the repository variable `AGENT_RUNS_PER_DAY` (default 6, set under Settings → Secrets
+and variables → Actions → Variables) and stops dispatching once it is reached.
 
 Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier` run on Sonnet
 and escalate to Opus on their third attempt.
 
-CI is paced too. `ci` runs on every pull request and on `main`, but `gds` — hardening plus
-precheck, about an hour on a 6x4 die — runs only on PRs to `main`, on `main`, nightly, and on
-manual `workflow_dispatch`.
+CI is paced too. `ci` runs on every pull request that is not a draft — the blocked protocol
+leans on that, and all three role files tell an agent so — and on `main`, but `gds` — hardening plus
+precheck, about an hour on a 6x4 die — runs on `main`, nightly, and on manual
+`workflow_dispatch`, and **not on pull requests at all**: an hour of latency in every rework
+round is the largest tax the loop can carry, and area and timing are properties of `main`
+rather than of one PR. It must therefore not be a required status check.
 
 ## Watching a run
 
@@ -299,11 +379,15 @@ git history and the open issues before trusting it.
    leaves the issue marked running forever, with nothing to retry it. The benign variant of
    the same asymmetry: nothing clears `status:running` on a merge either, so closed issues
    keep the label.
-2. **An agent cannot report "this task is impossible" in a way anything notices.** The
-   instruction to finish with a comment on the issue is in the workflow prompt in
-   `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
-   `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
-   agents return no structured outcome.
+2. ~~**An agent cannot report "this task is impossible" in a way anything notices.**~~
+   **Closed.** Worker agents now return `{outcome, reason}`, the protocol is in all three role
+   files, and `outcome: blocked` labels the issue `status:blocked`, withdraws the attempt
+   comment so the block is free, and opens a draft `[blocked]` PR that `ci` skips and
+   `rework.yaml` leaves alone. The orchestrator's step 3 decides: file the prerequisite,
+   rewrite the issue, or ask the owner. Issue #8 is the case that motivated it — a designer
+   run that concluded `success`, opened no PR, and stranded its issue for a day, because the
+   issue as written required `make ci` green while forbidding the `test/` edit that would
+   make it so.
 3. **An agent's `git push` starts no workflow run.** `agent.yaml`'s `actions/checkout` takes
    no `token:` and no `persist-credentials: false`, so checkout persists the default
    `GITHUB_TOKEN` as git's credential and **every `git push` an agent makes goes out under
@@ -325,16 +409,27 @@ git history and the open issues before trusting it.
    `ci` never appears because it was `on: push:` only. Neither do `docs` and `gds` as `push`
    runs, though that branch's own copy of both was `on: push:` — that is the suppression, and
    it covers every workflow, not just `ci`. The `pull_request` runs at 12:22 and 12:23 use
-   `main`'s copy of those workflows, which a PR run takes from the merge ref; `main` gained
-   their `pull_request` trigger at 11:51, which is why the 11:17 push has no pair.
+   `main`'s copy of those workflows: a PR run takes the file from the merge ref, which carries
+   `main`'s version where the head branch has not also changed it. `main` gained their
+   `pull_request` trigger at 11:51, which is why the 11:17 push has no pair.
 
    Two things follow, and they correct what this section said before the runs were read:
 
-   - **A fix push does refresh the PR's `pull_request` checks.** Those two run pairs were
-     created 8 s and 5 s after the pushes they carry, with `actor: github-actions[bot]` — the
-     pushing identity. So `synchronize` from a `GITHUB_TOKEN` push is not suppressed, and with
-     #16 merged a retrying agent's push re-runs `ci`. The earlier claim here — checks arrive
-     on `opened` and go stale — was wrong.
+   - **A fix push was observed to refresh the PR's `pull_request` checks.** Those two run
+     pairs were created 8 s and 5 s after the pushes they carry, with `actor:
+     github-actions[bot]` — the pushing identity. So `synchronize` from a `GITHUB_TOKEN` push
+     was not suppressed on either. The earlier claim here — checks arrive on `opened` and go
+     stale — was wrong. Take the refresh as observed rather than guaranteed: n is 2, both are
+     `docs`/`gds` runs, `ci` itself has never been seen to run on a `GITHUB_TOKEN`
+     `synchronize`, and the documented rule predicts the opposite.
+
+     **The rework loop rests on it from round two onwards.** `ci` red dispatches the agent, the
+     agent pushes a fix under `GITHUB_TOKEN`, and if that push starts no `ci` run then
+     `rework.yaml` never wakes, the new head carries no `reviewer` status, and there is no
+     other door back in — one round and done, which is the outcome the loop exists to fix. The
+     first green agent PR after `rework.yaml` merges is the test. If it stalls after one round,
+     this is why, and the manual nudge is `gh workflow run ci.yaml --ref <branch>` or a push
+     from an identity that is not `GITHUB_TOKEN`.
    - **Why the halves of one push differ is unexplained.** The same `git push` started a
      `pull_request` run and no `push` run. Suppression accounts for the second and not the
      first. Recorded as an observation, not a mechanism; nothing above depends on a reason.
@@ -346,6 +441,11 @@ git history and the open issues before trusting it.
    request_changes` that may already be fixed. Closing that means giving the agent a push
    credential that is not `GITHUB_TOKEN`, which is unverified and security-sensitive, so it is
    recorded here rather than guessed at.
+
+   One consequence of #16's other half, recorded here because `ci.yaml` points at this section:
+   with `push` narrowed to `main`, a direct push to `spec-provisional` — the spec agent's
+   clarification path, which opens no PR — gets no `ci`. It loses nothing real, since no
+   `Makefile` target reads `spec/`, and an agent's push there never started a run anyway.
 4. **Lane separation is a guard rail, not a sandbox.** The deny list covers the Read tool
    only; `Bash` is allowed unrestricted, so an agent could read the other lane with `cat`, and
    `Edit`/`Write` there are not denied. Nor does it cover the generated implementation: the
@@ -358,9 +458,19 @@ git history and the open issues before trusting it.
    names the Nexys Video (Artix-7 200T) as the FPGA target and says it is run by hand and
    never wired to CI. The two are consistent, but together they mean nothing in this
    repository builds the bitstream behind the submission package's FPGA video.
-6. **A dispatch costs two runs against the budget, not one.** The orchestrator counts "workflow
-   runs of `agent.yaml`", and a run the guard rejects still *is* a run. Dispatch adds two
-   labels — `agent:<role>` and `status:running` — so each one produces a real run and a skipped
-   one. Observed on 2026-09-19: issue #8's dispatch at 12:13:22 produced runs `35442244471`
-   (success) and `35442244449` (skipped). `AGENT_RUNS_PER_DAY = 6` therefore buys about three
-   dispatches a day, not six.
+6. **Guard-rejected runs used to be charged against the budget.** `agent.yaml` fires on
+   `issues: types: [labeled]`, so *every* label — `status:ready` on a newly filed issue, the
+   `status:running` half of a dispatch — starts a run that the `if:` guard rejects in about a
+   second. The orchestrator counted "workflow runs of `agent.yaml`", and a rejected run still
+   *is* a run.
+
+   Observed on 2026-09-19: 14 runs, of which 3 started an agent (`35438490991`,
+   `35441893716`, `35442244471`) and 11 were rejected — 8 of them from the owner filing
+   issues #6–#13 in three minutes. On 2026-09-20 the orchestrator read 14 against
+   `AGENT_RUNS_PER_DAY = 6`, skipped steps 3 and 4, and dispatched nothing; it recorded the
+   arithmetic in its digest, issue #17. Filing issues, an act that costs no agent time,
+   bought a day of silence.
+
+   Step 1 now counts only runs whose conclusion is not `skipped`, so the budget means what it
+   says: `AGENT_RUNS_PER_DAY = 6` is six agents. Left unfixed: the rejected runs still appear
+   in the Actions tab, where they read as failures to a human scanning the list.

@@ -1,0 +1,172 @@
+# Rework, half one: what happens when `ci` finishes on an agent's PR.
+#
+#   agent pushes -> ci
+#     ci red   -> run the agent again (fix the build)
+#     ci green -> run the reviewer
+#
+# The other half -- what happens on the reviewer's verdict -- lives in `reviewer.yaml` and not
+# here, because this workflow cannot see it. A reviewer run reaches `workflow_run` either as a
+# `workflow_dispatch` (dispatched below), whose `head_branch` is the default branch and whose
+# `head_sha` is main's HEAD, or as a `pull_request_target`. Neither carries a usable handle on
+# the PR in every case: `workflow_dispatch` points at main, and `workflow_run.pull_requests` is
+# empty on some runs (35470154786, 35470495609, 35471288143 are three). `reviewer.yaml` has
+# already resolved the PR, so the verdict acts there.
+#
+# Two things make this workable rather than obvious:
+#
+#  - It dispatches with `gh workflow run`, never by adding a label. `agent.yaml` fires on
+#    `issues: labeled`, and a label added by this workflow would be a GITHUB_TOKEN event, which
+#    starts no run -- the same suppression that kept `ci` off agent branches (gap 3 in
+#    agents/README.md). `workflow_dispatch` is one of the two events exempt from it.
+#  - It cannot loop. `agent.yaml` counts `Attempt N/3` comments on the issue and marks the
+#    issue `status:stuck` past the cap, so the ping-pong ends whatever happens here.
+#
+# Every PR that goes green is sent to the reviewer, the owner's included -- `reviewer.yaml` is
+# dispatch-only, so this is the only way any review starts. Only an agent's PR goes *back* to
+# an agent on red: branch `<role>/<issue>-<slug>`, author `claude[bot]`, and not while its
+# issue carries `status:blocked`. Drafts are skipped entirely.
+name: rework
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+# One decision at a time per branch. Two `ci` completions landing together could otherwise
+# both read no `reviewer` status and both dispatch -- two Opus reviews on one commit. The
+# pending-status marker closes most of that race; this closes the rest.
+concurrency:
+  group: rework-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write        # gh workflow run
+  issues: write         # read the issue's labels
+  pull-requests: write  # find the PR, comment on it
+  statuses: write       # the pending `reviewer` marker below IS the per-commit dedup token
+
+jobs:
+  next:
+    runs-on: ubuntu-24.04
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    steps:
+      - name: Decide and dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          # Look the PR up by head *branch*. `workflow_run.pull_requests` is empty on some runs
+          # and a head-SHA match breaks the moment the branch is pushed again while `ci` runs.
+          # `--head` matches the branch *name*, so a fork PR on a branch of the same name
+          # collides with ours, and two internal PRs can share a head branch. Select on the
+          # head repository *and* the exact commit this run tested: that is both filters and
+          # the has-it-moved-on check in one, with no dependence on list order.
+          pr=$(gh pr list -R "$REPO" --state open --head "$HEAD_BRANCH" \
+                 --json number,headRefName,headRefOid,author,body,isDraft,headRepositoryOwner,headRepository \
+                 --jq "[.[] | select((.headRepositoryOwner.login + \"/\" + .headRepository.name) == \"$REPO\"
+                                     and .headRefOid == \"$HEAD_SHA\")] | .[0] // empty")
+          if [ -z "$pr" ]; then
+            echo "No open PR in this repo at $HEAD_BRANCH@$HEAD_SHA -- nothing to do."
+            exit 0
+          fi
+
+          num=$(jq -r .number <<<"$pr")
+          author=$(jq -r .author.login <<<"$pr")
+          branch=$(jq -r .headRefName <<<"$pr")
+          role=${branch%%/*}
+
+          if [ "$(jq -r .isDraft <<<"$pr")" = true ]; then
+            echo "PR #$num is a draft; nothing here drives one."
+            exit 0
+          fi
+
+          if [ "$CONCLUSION" = success ]; then
+            # Every PR that goes green gets reviewed, not only an agent's -- `reviewer.yaml` is
+            # dispatch-only, so this is the sole way any review starts.
+            #
+            # Once per commit, and the dedup token is a `pending` status posted here, before
+            # the dispatch. The verdict status only exists once a review *ends*, so without a
+            # marker a `ci` re-run would start a second review; and a query for reviewer runs
+            # in flight cannot be scoped to this PR at all, since `gh run list` does not expose
+            # a run's `workflow_dispatch` inputs -- a repo-wide one would silently skip the
+            # second PR to go green inside a 45-minute review and leave it unreviewable.
+            # A `pending` marker is not a verdict. Treating the two alike wedges a commit
+            # whenever a review ends without reporting -- cancelled, or skipped because the PR
+            # went to draft after the marker was posted -- since nothing would ever dispatch
+            # another. A marker older than the reviewer's own ceiling belongs to a review that
+            # no longer exists, so it is replaced rather than honoured.
+            st=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
+                   --jq '[.statuses[] | select(.context=="reviewer")] | .[0] // empty')
+            if [ -n "$st" ]; then
+              state=$(jq -r .state <<<"$st")
+              if [ "$state" != pending ]; then
+                echo "PR #$num already has a reviewer verdict ($state) on $HEAD_SHA."
+                exit 0
+              fi
+              age=$(( $(date -u +%s) - $(date -u -d "$(jq -r .created_at <<<"$st")" +%s) ))
+              if [ "$age" -lt 3300 ]; then
+                echo "PR #$num has a review in flight (marker ${age}s old) -- not dispatching."
+                exit 0
+              fi
+              echo "PR #$num: reviewer marker is ${age}s old, past the 45-minute ceiling; re-dispatching."
+            fi
+            echo "ci green on PR #$num -> reviewer"
+            gh api "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state=pending -f context=reviewer -f description="Review queued"
+            if ! gh workflow run reviewer.yaml -R "$REPO" -f pr="$num"; then
+              # Never leave the marker behind without a review coming: a `pending` nothing can
+              # clear is the dangling required check this whole design exists to remove.
+              gh api "repos/$REPO/statuses/$HEAD_SHA" -f state=failure -f context=reviewer \
+                -f description="Could not dispatch the reviewer; re-run it by hand"
+              exit 1
+            fi
+            exit 0
+          fi
+
+          # Only a real failure sends the agent back. `timed_out`, `action_required` (the
+          # approval gate) and `stale` are infrastructure, and charging them to the issue's
+          # three attempts is the same mistake `reviewer.yaml` refuses to make for a verdict.
+          if [ "$CONCLUSION" != failure ]; then
+            echo "ci finished '$CONCLUSION' on PR #$num -- not a verdict on the work."
+            exit 0
+          fi
+
+          # Only an agent's PR goes back to an agent; the owner's are the owner's.
+          case "$role" in
+            spec|designer|verifier) ;;
+            *) echo "PR #$num: branch '$branch' is not an agent branch."; exit 0 ;;
+          esac
+          # Both spellings. `gh --json author` is GraphQL-backed and renders a bot login as
+          # `app/claude`; the webhook payload `agent.yaml` guards on says `claude[bot]`. Same
+          # identity, two sources, and taking only one silently kills every transition below.
+          case "$author" in
+            'claude[bot]'|app/claude) ;;
+            *) echo "PR #$num: author '$author' is not the agent app."; exit 0 ;;
+          esac
+          echo "PR #$num: role=$role author=$author -- driving."
+
+          issue=$(jq -r .body <<<"$pr" | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
+          if [ -z "$issue" ]; then
+            gh pr comment "$num" -R "$REPO" --body \
+              "@rechefe this PR has no \`Closes #<issue>\` line, so the rework loop cannot find its issue and stops here."
+            exit 0
+          fi
+
+          # `status:blocked` means an agent already judged this issue impossible as written.
+          # Dispatching again would spend a run reaching the same wall -- and because a blocked
+          # run withdraws its own attempt comment, the 3-attempt cap would never stop it. This
+          # is the loop's real bound; the orchestrator's step 3 owns a blocked issue.
+          if [ "$(gh issue view "$issue" -R "$REPO" --json labels \
+                    --jq '[.labels[].name] | index("status:blocked") // "no"')" != no ]; then
+            echo "Issue #$issue is status:blocked; the orchestrator decides, not this loop."
+            exit 0
+          fi
+
+          echo "ci red on PR #$num -> agent ($role) on issue #$issue"
+          gh workflow run agent.yaml -R "$REPO" -f role="$role" -f issue="$issue"

@@ -1,32 +1,51 @@
 # Reviewer agent: grills every PR; its verdict is the required `reviewer` status check.
 #
-# Security (pull_request_target runs with this repo's secrets, from main's workflow file):
+# Security (this runs with the repo's secrets, from main's workflow file):
 #  - The workspace root is main (trusted CLAUDE.md, agents/). The PR head is checked out to
 #    pr-head/ as read-only material and nothing from it is executed.
 #  - Claude gets read tools and `gh pr` read/comment commands only; no general shell.
 #  - PRs from forks never reach Claude: the check fails and the owner decides.
 #  - `github_token` is the job's own scoped token, NOT the Claude GitHub App. Anthropic's
-#    OIDC app-token exchange returns 401 for a `pull_request_target` run (it succeeds for
-#    the `issues`-triggered agent workflow with the same secret and environment), which is
-#    a defensible refusal: that trigger runs with this repo's secrets. Supplying a token
-#    makes the action skip the exchange. Safe here because the fork check above means we
-#    only ever review branches from inside this repo. Cost: reviews post as
-#    `github-actions[bot]` rather than `claude[bot]`.
+#    OIDC app-token exchange returned 401 here (it succeeds for the `issues`-triggered agent
+#    workflow with the same secret and environment), which is a defensible refusal for a
+#    trigger that runs with this repo's secrets. Supplying a token makes the action skip the
+#    exchange. Safe because the fork check above means we only ever review branches from
+#    inside this repo. Cost: reviews post as `github-actions[bot]` rather than `claude[bot]`.
 #
 # Visibility: `display_report: true` puts the review report in the job's Step Summary.
-# `track_progress` is not available here at all -- it throws on `pull_request_target`.
+# `track_progress` is not available here at all -- it throws on this event.
 name: reviewer
 
+# Dispatched only, by `rework.yaml` once `ci` is green on the PR -- never by a PR event.
+#
+# It used to be `pull_request_target`, and that had to go for two reasons. It produced a second
+# review: `opened` starts one, `ci` finishes long before a 45-minute review, `rework.yaml` sees
+# no verdict yet and dispatches another, and `cancel-in-progress` kills the first -- a wasted
+# Opus review on most agent PRs, invisible to `AGENT_RUNS_PER_DAY`. Worse, it left two signals
+# called `reviewer` on one commit: a *check run* from the cancelled job and a *commit status*
+# from the dispatched one. Branch protection matches a required context against both, and which
+# wins when they disagree is not established -- a cancelled check run outranking a green status
+# is the unmergeable-PR mode this design exists to remove.
+#
+# Dispatch-only leaves exactly one `reviewer` signal per commit, the status posted below, and
+# reviews only code that has already passed `ci`. `workflow_dispatch` runs from the default
+# branch, so the security properties below are unchanged.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review
+        type: number
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: reviewer-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: reviewer-${{ inputs.pr }}
+  # Never cancel a review in flight: a cancelled run reports nothing, and the dedup in
+  # `rework.yaml` is what keeps a commit from being reviewed twice.
+  cancel-in-progress: false
 
 jobs:
   reviewer:
@@ -37,26 +56,86 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      statuses: write
+      actions: write
       id-token: write
     steps:
-      - name: External PRs need the owner
-        if: github.event.pull_request.head.repo.full_name != github.repository
+      - name: Resolve the PR, and refuse forks
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ inputs.pr }}
         run: |
-          echo "PR from a fork: the reviewer agent does not run on external code. Owner review required."
-          exit 1
+          set -euo pipefail
+          gh pr view "$N" -R "$GITHUB_REPOSITORY" \
+            --json number,state,headRefOid,headRefName,headRepository,headRepositoryOwner,author,body,isDraft > /tmp/pr.json
+          head_repo="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' /tmp/pr.json)"
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "PR from a fork ($head_repo): the reviewer agent does not run on external code. Owner review required."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$(jq -r .headRefOid /tmp/pr.json)" \
+              -f state=failure -f context=reviewer -f description="PR from a fork: owner review required"
+            exit 1
+          fi
+          if [ "$(jq -r .state /tmp/pr.json)" != OPEN ]; then
+            echo "PR #$N is not open."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "number=$(jq -r .number /tmp/pr.json)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(jq -r .headRefOid /tmp/pr.json)" >> "$GITHUB_OUTPUT"
+          branch="$(jq -r .headRefName /tmp/pr.json)"
+          role="${branch%%/*}"
+          issue="$(jq -r '.body // ""' /tmp/pr.json | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)"
+          # A draft is never reviewed, on any path. A `[blocked]` PR is deliberately
+          # incomplete, and a review of it would post a `reviewer` failure status that sticks
+          # to that SHA: mark the PR ready with no new commit and `ci` reruns green, the dedup
+          # in rework.yaml sees the stale status and declines to dispatch, and the required
+          # check sits red with nothing able to re-report it.
+          if [ "$(jq -r .isDraft /tmp/pr.json)" = true ]; then
+            echo "PR #$N is a draft; not reviewing it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Role and author tested separately, and both spellings of the author accepted:
+          # `gh --json author` is GraphQL-backed and renders a bot login as `app/claude`,
+          # while the webhook payload `agent.yaml` guards on says `claude[bot]`. The resolved
+          # values are echoed so a future mismatch shows up in the log instead of as a step
+          # that silently skips.
+          author="$(jq -r .author.login /tmp/pr.json)"
+          agent=false
+          case "$role" in
+            spec|designer|verifier)
+              case "$author" in 'claude[bot]'|app/claude) agent=true ;; esac ;;
+          esac
+          echo "PR #$N: role=$role author=$author agent=$agent"
+          echo "role=$role"   >> "$GITHUB_OUTPUT"
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
 
       - name: Checkout main (trusted)
+        if: steps.pr.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Checkout PR head (data only)
+        if: steps.pr.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.sha }}
           path: pr-head
           persist-credentials: false
 
       - name: Review
         id: review
+        if: steps.pr.outputs.skip != 'true'
+        # The timeout belongs on this step, not on the job. A job that exceeds
+        # `timeout-minutes` is *cancelled*, and cancellation skips every remaining step
+        # whatever its `if:` -- so a review that overran posted no status at all, leaving the
+        # required check dangling: the failure mode this design exists to remove, reached by
+        # the one path nobody watches. A step timeout fails the step and the job carries on,
+        # so `Report the verdict` still runs and reports red. The job keeps a slightly longer
+        # timeout as a backstop against a hang outside this step.
+        timeout-minutes: 40
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -65,11 +144,11 @@ jobs:
           display_report: true
           prompt: |
             You are the reviewer agent for ${{ github.repository }}.
-            Read CLAUDE.md, then agents/reviewer.md, then review PR #${{ github.event.pull_request.number }}.
+            Read CLAUDE.md, then agents/reviewer.md, then review PR #${{ steps.pr.outputs.number }}.
             The PR's files are in ./pr-head (read-only); the spec is in ./pr-head/spec and ./spec.
-            Get the diff with `gh pr diff ${{ github.event.pull_request.number }}` and the description
-            and linked issue with `gh pr view ${{ github.event.pull_request.number }}`.
-            Post your findings with `gh pr comment ${{ github.event.pull_request.number }} --body-file <file>`,
+            Get the diff with `gh pr diff ${{ steps.pr.outputs.number }}` and the description
+            and linked issue with `gh pr view ${{ steps.pr.outputs.number }}`.
+            Post your findings with `gh pr comment ${{ steps.pr.outputs.number }} --body-file <file>`,
             then return the structured verdict.
           claude_args: >-
             --model opus
@@ -79,10 +158,114 @@ jobs:
             --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","request_changes"]},"blocking":{"type":"integer","minimum":0},"summary":{"type":"string"}},"required":["verdict","blocking","summary"]}'
 
       - name: Verdict
+        id: verdict
+        if: steps.pr.outputs.skip != 'true'
         env:
           RESULT: ${{ steps.review.outputs.structured_output }}
         run: |
           verdict=$(jq -r '.verdict // "missing"' <<<"$RESULT")
           echo "Reviewer verdict: $verdict ($(jq -r '.blocking' <<<"$RESULT") blocking)"
           jq -r '.summary' <<<"$RESULT" >> "$GITHUB_STEP_SUMMARY"
-          [ "$verdict" = approve ]
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      # The verdict has to reach the PR as a commit status, not only as this job's conclusion.
+      # A run dispatched by `rework.yaml` is a `workflow_dispatch` run and is attached to no
+      # PR, so its check never appears there and the required `reviewer` check would sit
+      # unreported forever. Posting the status against the head SHA satisfies it either way,
+      # and `!cancelled()` means a reviewer that crashes -- an OIDC 401, a timeout -- reports
+      # red instead of leaving the check dangling, which is what stranded PR #5. A *cancelled*
+      # run reports nothing, because a newer run is about to.
+      - name: Report the verdict on the PR head
+        # `always()`, not `!cancelled()`. A cancelled job -- the 45-minute backstop, a manual
+        # cancel -- must still report, because `rework.yaml` counts *any* `reviewer` status as
+        # "already handled", including the `pending` marker it posts before dispatching. A run
+        # that ends without reporting therefore leaves that marker as a permanent pending: no
+        # verdict, and nothing will ever dispatch another review for that commit.
+        if: always() && steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          NUM: ${{ steps.pr.outputs.number }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SHA:-}" ]; then echo "No PR resolved; nothing to report."; exit 1; fi
+          if [ "${VERDICT:-}" = approve ]; then state=success; desc="Approved"
+          elif [ "${VERDICT:-}" = request_changes ]; then state=failure; desc="Changes requested"
+          else state=failure; desc="Reviewer did not return a verdict"; fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context=reviewer -f description="$desc" -f target_url="$RUN_URL"
+          echo "reviewer/$SHA -> $state ($desc) on PR #$NUM"
+
+      # The verdict half of the rework loop. It lives here and not in `rework.yaml` because a
+      # reviewer run reaches `workflow_run` with no usable handle on its PR -- a dispatched run
+      # points at the default branch, and `workflow_run.pull_requests` is empty on some runs.
+      # Here the PR is already resolved, so the verdict acts on it directly.
+      - name: Drive the agent PR on the verdict
+        if: '!cancelled() && steps.pr.outputs.agent == ''true'''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUM: ${{ steps.pr.outputs.number }}
+          ROLE: ${{ steps.pr.outputs.role }}
+          ISSUE: ${{ steps.pr.outputs.issue }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT:-}" = approve ]; then
+            # `|| true`: the label is created by setup.yaml, which is `workflow_dispatch`-only
+            # and must be re-run after this merges. The ping is what matters and must not be
+            # lost to a missing label.
+            # Not `| grep -q`: it exits at the first match, which can SIGPIPE `gh`, and
+            # under `pipefail` that takes the else branch -- posting the second ping this
+            # guard exists to prevent.
+            queued=$(gh pr view "$NUM" -R "$GITHUB_REPOSITORY" --json labels \
+                       --jq '[.labels[].name] | index("status:owner") // "no"')
+            if [ "$queued" != no ]; then
+              echo "PR #$NUM is already in the owner's queue; not pinging again."
+              exit 0
+            fi
+            if ! gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner; then
+              gh label create status:owner -R "$GITHUB_REPOSITORY" --color 0e8a16 --force \
+                --description "Green and approved: the owner's queue" || true
+              gh pr edit "$NUM" -R "$GITHUB_REPOSITORY" --add-label status:owner || true
+            fi
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe green and approved — ready for you. Review: $RUN_URL"
+            exit 0
+          fi
+
+          # Only a real `request_changes` sends the agent back. A reviewer that returned no
+          # verdict did not judge the work: an OIDC 401 or a timeout is an infrastructure
+          # failure, and spending the issue's attempts on it would march a sound PR to
+          # `status:stuck` with nothing wrong in the agent's work.
+          if [ "${VERDICT:-}" != request_changes ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe the reviewer finished without a verdict, so this PR is not moving on its own. Nothing was charged against issue #${ISSUE:-?}'s attempts. Re-run the reviewer, or dispatch it with \`gh workflow run reviewer.yaml -f pr=$NUM\`. Run: $RUN_URL"
+            exit 0
+          fi
+
+          if [ -z "${ISSUE:-}" ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "@rechefe the reviewer requested changes, and this PR has no \`Closes #<issue>\` line, so the loop cannot find the agent to send it back to. Review: $RUN_URL"
+            exit 0
+          fi
+          # Same guard `rework.yaml` applies. A blocked PR is a draft and drafts are never
+          # reviewed, so this is mostly unreachable -- except by the one branch in
+          # `agent.yaml` that leaves an issue `status:blocked` with a *non-draft* PR open,
+          # because the agent could not put it in draft. That PR can still go green.
+          if [ "$(gh issue view "$ISSUE" -R "$GITHUB_REPOSITORY" --json labels \
+                    --jq '[.labels[].name] | index("status:blocked") // "no"')" != no ]; then
+            gh pr comment "$NUM" -R "$GITHUB_REPOSITORY" --body \
+              "Changes requested, but issue #$ISSUE is \`status:blocked\` — an agent already judged it impossible as written, so the loop stops here. @rechefe the orchestrator's step 3 decides what happens next. Review: $RUN_URL"
+            exit 0
+          fi
+          echo "request_changes on PR #$NUM -> agent ($ROLE) on issue #$ISSUE"
+          gh workflow run agent.yaml -R "$GITHUB_REPOSITORY" -f role="$ROLE" -f issue="$ISSUE"
+
+      - name: Fail on a non-approval
+        if: '!cancelled() && steps.pr.outputs.skip != ''true'''
+        env:
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+        run: '[ "${VERDICT:-}" = approve ]'

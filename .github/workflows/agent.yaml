@@ -76,8 +76,12 @@ jobs:
           ROLE: ${{ steps.ctx.outputs.role }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          prev=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate \
-            --jq '[.[] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | length')
+          # `--paginate` without `--slurp` runs `--jq` per page, so past 30 comments this
+          # emitted one number per page and `$((prev + 1))` became a bash arithmetic error --
+          # on exactly the long-lived issues where the cap matters. `--slurp` gives one array
+          # of pages; `.[][]` flattens it.
+          prev=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --slurp \
+            --jq '[.[][] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | length')
           n=$((prev + 1))
           if [ "$n" -gt 3 ]; then
             gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:stuck --remove-label "agent:$ROLE,status:running" || true
@@ -142,14 +146,86 @@ jobs:
             issue #${{ steps.ctx.outputs.issue }} (`gh issue view ${{ steps.ctx.outputs.issue }} --comments`).
             This is attempt ${{ steps.attempt.outputs.n }} of 3. If an open PR for this issue
             already exists, continue on its branch: fix what its failing CI checks and review
-            comments report.
+            comments report. If that PR is a `[blocked]` draft and the blocker is gone, mark it
+            ready (`gh pr ready <n>`) and drop the `[blocked]` prefix -- a draft gets no CI run
+            and nothing in the loop drives one, so leaving it in draft strands the issue.
             Toolchain: prefix OCaml commands with `opam exec --` (e.g. `opam exec -- make ci`).
             Finish with a comment on the issue: what you did, the PR link, and anything left open.
+
+            If the issue cannot be done as written -- it contradicts itself, it needs a change
+            outside your lane, or the spec does not settle something you must know -- do not
+            spend the attempt guessing. Do the parts that are settled, open a **draft** PR
+            titled `[blocked] <what you did>` whose body states the blocker in one paragraph,
+            and return `outcome: blocked` with that blocker as `reason`. A blocked outcome is
+            a result, not a failure: it costs no further attempt and the orchestrator picks it
+            up. Returning `outcome: done` on work you could not finish does cost one.
           claude_args: >-
             --model ${{ steps.attempt.outputs.model }}
             --max-turns 200
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep,TodoWrite"
             ${{ steps.lane.outputs.deny && format('--disallowedTools {0}', steps.lane.outputs.deny) || '' }}
+            --json-schema '{"type":"object","properties":{"outcome":{"type":"string","enum":["done","blocked"]},"reason":{"type":"string"},"pr":{"type":"string"}},"required":["outcome","reason"]}'
+
+      # A blocked outcome is the agent saying the issue cannot be done as written. It is a
+      # result, so it must not look like a failed attempt: the issue goes to `status:blocked`
+      # for the orchestrator's next round rather than back into the dispatch queue, and the
+      # `Attempt N/3` comment this run wrote is withdrawn so the block costs nothing. Retrying
+      # an issue whose text is the problem just spends attempts on the same wall.
+      - name: Blocked outcome
+        if: always() && steps.attempt.outputs.go == 'true' && steps.claude.outputs.structured_output
+        id: outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+          ROLE: ${{ steps.ctx.outputs.role }}
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          outcome=$(jq -r '.outcome // "done"' <<<"$RESULT")
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          [ "$outcome" = blocked ] || exit 0
+          reason=$(jq -r '.reason' <<<"$RESULT")
+          # Split, and self-healing. A combined `--add-label X --remove-label Y` is one API
+          # call: if `status:blocked` does not exist yet -- `setup.yaml` is
+          # `workflow_dispatch`-only and this label is new -- the call fails and `|| true`
+          # swallows *both* halves, leaving the issue `status:running` and unlabelled. The
+          # orchestrator's step 3 would never see it and `rework.yaml` would never see the
+          # label it treats as the loop's bound, so the block would silently not bind.
+          if ! gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:blocked; then
+            gh label create status:blocked -R "$GITHUB_REPOSITORY" --color d4c5f9 --force \
+              --description "An agent says the issue cannot be done as written" || true
+            gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:blocked || true
+          fi
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label status:running || true
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
+            "**Blocked** ($ROLE agent, run: $RUN_URL)
+
+          $reason
+
+          This did not consume an attempt. The orchestrator will decide on its next run whether
+          to rewrite the issue, file the issue this one depends on, or hand it to @rechefe."
+          # Withdraw this run's attempt comment so the block is free -- but only once a draft
+          # PR actually says so. The attempt cap is the only bound on the rework loop, and a
+          # `blocked` that resets the counter while leaving a *non-draft* PR open would let
+          # `ci` red -> agent -> `blocked` -> counter reset -> `ci` red run forever. If the
+          # agent could not put the PR in that state, the attempt stands.
+          drafts=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json isDraft,body,headRefName \
+            --jq "[.[] | select(.isDraft
+                    and (.headRefName | startswith(\"$ROLE/$ISSUE-\"))
+                    and (.body | test(\"[Cc]loses #$ISSUE([^0-9]|\$)\")))] | length")
+          if [ "$drafts" = 0 ]; then
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
+              "The block above has no draft PR stating it, so this attempt stands. @rechefe the agent should have opened a draft \`[blocked]\` PR, or marked its existing one a draft."
+            exit 0
+          fi
+          # `--slurp` for the same reason as above; `// empty` because `last | .id` on an
+          # empty array yields the string "null", which passes `[ -n ]` and would DELETE
+          # /comments/null.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --slurp \
+            --jq "[.[][] | select(.user.login==\"github-actions[bot]\" and (.body|startswith(\"Attempt \")))] | last | .id // empty")
+          [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
 
       - name: Release dispatch label
         if: always() && steps.attempt.outputs.go == 'true'
@@ -158,9 +234,11 @@ jobs:
           ISSUE: ${{ steps.ctx.outputs.issue }}
           ROLE: ${{ steps.ctx.outputs.role }}
           OK: ${{ steps.claude.outputs.conclusion == 'success' }}
+          BLOCKED: ${{ steps.outcome.outputs.outcome == 'blocked' }}
         run: |
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "agent:$ROLE" || true
-          # A failed run goes back to the queue; a successful one stays running until its PR merges.
-          if [ "$OK" != true ]; then
+          # A failed run goes back to the queue; a successful one stays running until its PR
+          # merges; a blocked one is already labelled and waits for the orchestrator.
+          if [ "$OK" != true ] && [ "$BLOCKED" != true ]; then
             gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label status:running --add-label status:ready || true
           fi
