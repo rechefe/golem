@@ -21,9 +21,10 @@
 #  - It cannot loop. `agent.yaml` counts `Attempt N/3` comments on the issue and marks the
 #    issue `status:stuck` past the cap, so the ping-pong ends whatever happens here.
 #
-# It acts only on PRs opened by an agent -- branch `<role>/<issue>-<slug>`, author `claude[bot]`
-# -- so the owner's own PRs are never touched. A draft PR is skipped entirely: that is how an
-# agent reports `outcome: blocked`, and the orchestrator decides what to do with it.
+# Every PR that goes green is sent to the reviewer, the owner's included -- `reviewer.yaml` is
+# dispatch-only, so this is the only way any review starts. Only an agent's PR goes *back* to
+# an agent on red: branch `<role>/<issue>-<slug>`, author `claude[bot]`, and not while its
+# issue carries `status:blocked`. Drafts are skipped entirely.
 name: rework
 
 on:
@@ -63,11 +64,8 @@ jobs:
           branch=$(jq -r .headRefName <<<"$pr")
           role=${branch%%/*}
 
-          # Agent PRs only. Anything else is the owner's and is not ours to drive.
-          case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
-          if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
           if [ "$(jq -r .isDraft <<<"$pr")" = true ]; then
-            echo "PR #$num is a draft (blocked); the orchestrator decides, not this loop."
+            echo "PR #$num is a draft; nothing here drives one."
             exit 0
           fi
 
@@ -78,13 +76,17 @@ jobs:
           fi
 
           if [ "$CONCLUSION" = success ]; then
-            # Do not review the same commit twice. `reviewer.yaml` posts a `reviewer` commit
-            # status on the head it reviewed, so its presence means a review already ran or is
-            # running for this SHA -- the `pull_request_target` run on `opened`, usually.
+            # Every PR that goes green gets reviewed, not only an agent's -- `reviewer.yaml` is
+            # dispatch-only, so this is the sole way any review starts. Once per commit: the
+            # `reviewer` status is posted at the end of a review, so check for a run in flight
+            # too, or a `ci` re-run would start a second one.
             seen=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
                      --jq '[.statuses[] | select(.context=="reviewer")] | length')
-            if [ "$seen" != 0 ]; then
-              echo "PR #$num already has a reviewer status on $HEAD_SHA -- not dispatching."
+            live=$(gh run list -R "$REPO" -w reviewer.yaml --limit 20 \
+                     --json status,databaseId \
+                     --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length')
+            if [ "$seen" != 0 ] || [ "$live" != 0 ]; then
+              echo "PR #$num: reviewer status=$seen, in-flight runs=$live -- not dispatching."
               exit 0
             fi
             echo "ci green on PR #$num -> reviewer"
@@ -92,11 +94,26 @@ jobs:
             exit 0
           fi
 
+          # ci red. Only an agent's PR goes back to an agent; the owner's are the owner's.
+          case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
+          if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
+
           issue=$(jq -r .body <<<"$pr" | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
           if [ -z "$issue" ]; then
             gh pr comment "$num" -R "$REPO" --body \
               "@rechefe this PR has no \`Closes #<issue>\` line, so the rework loop cannot find its issue and stops here."
             exit 0
           fi
+
+          # `status:blocked` means an agent already judged this issue impossible as written.
+          # Dispatching again would spend a run reaching the same wall -- and because a blocked
+          # run withdraws its own attempt comment, the 3-attempt cap would never stop it. This
+          # is the loop's real bound; the orchestrator's step 3 owns a blocked issue.
+          if [ "$(gh issue view "$issue" -R "$REPO" --json labels \
+                    --jq '[.labels[].name] | index("status:blocked") // "no"')" != no ]; then
+            echo "Issue #$issue is status:blocked; the orchestrator decides, not this loop."
+            exit 0
+          fi
+
           echo "ci red on PR #$num -> agent ($role) on issue #$issue"
           gh workflow run agent.yaml -R "$REPO" -f role="$role" -f issue="$issue"

@@ -14,7 +14,7 @@ not this one.
 |---|---|---|---|
 | `orchestrator.yaml` | `schedule` 04:00 UTC, or `workflow_dispatch` | `claude[bot]` | Dispatch and plan. Writes issues, labels, comments and the spec batch PR — no file changes. |
 | `agent.yaml` | `issues: labeled` with `agent:<role>`, or `workflow_dispatch` | `claude[bot]` | Run one worker agent on one issue. |
-| `reviewer.yaml` | `pull_request_target`, or `workflow_dispatch` with a PR number | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
+| `reviewer.yaml` | `workflow_dispatch` with a PR number, dispatched by `rework.yaml` once `ci` is green | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
 | `rework.yaml` | `workflow_run` completed for `ci` | — | Half the loop: `ci` red sends an agent PR back to its agent, `ci` green sends it to the reviewer. The verdict half lives in `reviewer.yaml`. Acts only on branches `<role>/…` opened by `claude[bot]`. |
 | `gds.yaml` | `main`, nightly at 02:00 UTC, or `workflow_dispatch` — **not** pull requests | — | Hardening, precheck, gate-level test. About an hour on a 6x4 die, which is why no PR waits on it; run it by hand on a PR that plausibly moves area or timing. It must not be a required status check. Its `viewer` job deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build workflows — and is guarded on `ref == refs/heads/main`. |
@@ -88,11 +88,17 @@ Three details carry the design:
   `GITHUB_TOKEN` event, and GitHub starts no run for one (gap 3) — the loop would silently do
   nothing. `workflow_dispatch` is one of the two events exempt from that rule, and both
   `agent.yaml` and `reviewer.yaml` accept it.
-- **A commit is reviewed once.** `reviewer.yaml` still runs on `pull_request_target`, so the
-  owner's own PRs are reviewed too; `rework.yaml` therefore dispatches a review only when no
-  `reviewer` status exists on that head yet, and `reviewer.yaml`'s per-PR `concurrency` group
-  cancels a duplicate that slips through the gap while a review is still running. A cancelled
-  review is inert: its steps are `!cancelled()`, so it posts no status and drives nothing.
+- **A commit is reviewed once, and only after `ci` is green.** `reviewer.yaml` is
+  **dispatch-only** — no PR event starts it — so `rework.yaml` is the single door in, for the
+  owner's PRs as much as an agent's. It was `pull_request_target`, and that produced a second
+  review on most agent PRs: `opened` starts one, `ci` finishes long before a 45-minute review,
+  the dedup sees no verdict yet and dispatches another, and `cancel-in-progress` kills the
+  first. Worse, it left two signals called `reviewer` on one commit — a *check run* from the
+  cancelled job and a *commit status* from the dispatched one — and which of those branch
+  protection honours when they disagree is not established. A cancelled check run outranking a
+  green status is the unmergeable-PR mode this design exists to remove. Dispatch-only leaves
+  exactly one signal per commit. The dedup checks for an in-flight reviewer run as well as a
+  posted status, since the status only appears when a review ends.
 - **Only a real `request_changes` sends the agent back.** A reviewer that finished without a
   verdict — an OIDC 401, a timeout — did not judge the work, and charging that to the issue's
   three attempts would march a sound PR to `status:stuck` with nothing wrong in it. That case
@@ -103,8 +109,14 @@ Three details carry the design:
   `spec/3-workload-study` (gap 3 again). Waiting for the event would have meant a fix push is
   never re-reviewed, so the loop dispatches the reviewer explicitly instead.
 
-**The loop cannot run away.** `agent.yaml` counts `Attempt N/3` comments on the issue and, past
-the cap, labels it `status:stuck` and pings the owner instead of running. Note that rework
+**The loop cannot run away**, and the attempt counter is the only thing making that true, so
+two rules protect it. `agent.yaml` counts `Attempt N/3` comments on the issue and, past the
+cap, labels it `status:stuck` and pings the owner instead of running. A blocked outcome
+withdraws its own attempt comment — free to report a wall — and that is a hole in the bound
+unless the PR really is a draft: a non-draft PR left red would come back through `ci` red →
+agent → blocked → counter reset, forever. So the withdrawal happens only when a draft PR for
+that issue exists, and `rework.yaml` refuses to dispatch against an issue labelled
+`status:blocked` at all. Note that rework
 dispatches do **not** pass through `AGENT_RUNS_PER_DAY` — that ceiling is the orchestrator's
 step 1 and governs *new* work only. Finishing something already started is bounded by the
 attempt cap, not by the daily budget.

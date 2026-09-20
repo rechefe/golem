@@ -1,29 +1,36 @@
 # Reviewer agent: grills every PR; its verdict is the required `reviewer` status check.
 #
-# Security (pull_request_target runs with this repo's secrets, from main's workflow file):
+# Security (this runs with the repo's secrets, from main's workflow file):
 #  - The workspace root is main (trusted CLAUDE.md, agents/). The PR head is checked out to
 #    pr-head/ as read-only material and nothing from it is executed.
 #  - Claude gets read tools and `gh pr` read/comment commands only; no general shell.
 #  - PRs from forks never reach Claude: the check fails and the owner decides.
 #  - `github_token` is the job's own scoped token, NOT the Claude GitHub App. Anthropic's
-#    OIDC app-token exchange returns 401 for a `pull_request_target` run (it succeeds for
-#    the `issues`-triggered agent workflow with the same secret and environment), which is
-#    a defensible refusal: that trigger runs with this repo's secrets. Supplying a token
-#    makes the action skip the exchange. Safe here because the fork check above means we
-#    only ever review branches from inside this repo. Cost: reviews post as
-#    `github-actions[bot]` rather than `claude[bot]`.
+#    OIDC app-token exchange returned 401 here (it succeeds for the `issues`-triggered agent
+#    workflow with the same secret and environment), which is a defensible refusal for a
+#    trigger that runs with this repo's secrets. Supplying a token makes the action skip the
+#    exchange. Safe because the fork check above means we only ever review branches from
+#    inside this repo. Cost: reviews post as `github-actions[bot]` rather than `claude[bot]`.
 #
 # Visibility: `display_report: true` puts the review report in the job's Step Summary.
-# `track_progress` is not available here at all -- it throws on `pull_request_target`.
+# `track_progress` is not available here at all -- it throws on this event.
 name: reviewer
 
+# Dispatched only, by `rework.yaml` once `ci` is green on the PR -- never by a PR event.
+#
+# It used to be `pull_request_target`, and that had to go for two reasons. It produced a second
+# review: `opened` starts one, `ci` finishes long before a 45-minute review, `rework.yaml` sees
+# no verdict yet and dispatches another, and `cancel-in-progress` kills the first -- a wasted
+# Opus review on most agent PRs, invisible to `AGENT_RUNS_PER_DAY`. Worse, it left two signals
+# called `reviewer` on one commit: a *check run* from the cancelled job and a *commit status*
+# from the dispatched one. Branch protection matches a required context against both, and which
+# wins when they disagree is not established -- a cancelled check run outranking a green status
+# is the unmergeable-PR mode this design exists to remove.
+#
+# Dispatch-only leaves exactly one `reviewer` signal per commit, the status posted below, and
+# reviews only code that has already passed `ci`. `workflow_dispatch` runs from the default
+# branch, so the security properties below are unchanged.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
-  # `rework.yaml` dispatches a re-review once `ci` is green on an agent's fix push. The event
-  # cannot be relied on for that: a `pull_request_target` run was not created for either of the
-  # agent's GITHUB_TOKEN pushes on `spec/3-workload-study` (gap 3 in agents/README.md), so
-  # without this input a retry never gets re-reviewed and the ping-pong stops after one round.
   workflow_dispatch:
     inputs:
       pr:
@@ -35,16 +42,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: reviewer-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: true
+  group: reviewer-${{ inputs.pr }}
+  # Never cancel a review in flight: a cancelled run reports nothing, and the dedup in
+  # `rework.yaml` is what keeps a commit from being reviewed twice.
+  cancel-in-progress: false
 
 jobs:
   reviewer:
-    # Never review a draft. `opened` fires for draft PRs, and a `[blocked]` draft is
-    # deliberately incomplete -- reviewing it would produce `request_changes` and send the
-    # agent back at issue text that has not changed, which is what `outcome: blocked` exists
-    # to prevent. `ci.yaml` and `rework.yaml` skip drafts for the same reason.
-    if: github.event_name != 'pull_request_target' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     environment: agents
     timeout-minutes: 45
@@ -60,7 +64,7 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          N: ${{ github.event.pull_request.number || inputs.pr }}
+          N: ${{ inputs.pr }}
         run: |
           set -euo pipefail
           gh pr view "$N" -R "$GITHUB_REPOSITORY" \

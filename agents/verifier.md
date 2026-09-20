@@ -48,6 +48,12 @@ Do it like this:
    paragraph: what you cannot do, the exact text or rule that stops you, and what would
    unblock it (a decision, a spec requirement, an issue in another lane). CI does not run on a
    draft, so nothing is checked that you deliberately did not do.
+
+   **If a PR for this issue is already open** — you are a retry continuing on its branch —
+   convert that one instead: `gh pr ready <n> --undo`, retitle it `[blocked] …`, and put the
+   blocker in a comment on it. Leaving it out of draft is not cosmetic: a blocked outcome
+   withdraws this run's attempt, and a non-draft PR still red on CI would be dispatched back
+   to you forever, with the attempt counter reset each time.
 3. Return `outcome: blocked` with that same blocker as `reason`.
 
 The orchestrator reads it on its next run and either files the prerequisite issue, rewrites

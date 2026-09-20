@@ -189,7 +189,18 @@ jobs:
 
           This did not consume an attempt. The orchestrator will decide on its next run whether
           to rewrite the issue, file the issue this one depends on, or hand it to @rechefe."
-          # Withdraw this run's attempt comment so the block is free.
+          # Withdraw this run's attempt comment so the block is free -- but only once a draft
+          # PR actually says so. The attempt cap is the only bound on the rework loop, and a
+          # `blocked` that resets the counter while leaving a *non-draft* PR open would let
+          # `ci` red -> agent -> `blocked` -> counter reset -> `ci` red run forever. If the
+          # agent could not put the PR in that state, the attempt stands.
+          drafts=$(gh pr list -R "$GITHUB_REPOSITORY" --state open --json isDraft,body \
+            --jq "[.[] | select(.isDraft and (.body | test(\"[Cc]loses #$ISSUE([^0-9]|\$)\")))] | length")
+          if [ "$drafts" = 0 ]; then
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
+              "The block above has no draft PR stating it, so this attempt stands. @rechefe the agent should have opened a draft \`[blocked]\` PR, or marked its existing one a draft."
+            exit 0
+          fi
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate \
             --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body|startswith(\"Attempt \")))] | last | .id")
           [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
