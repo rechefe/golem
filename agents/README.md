@@ -62,14 +62,15 @@ one of the issue's three attempts. Keeping the orchestrator alive longer fixes n
 the retry lands on the next run either way, and polling in between costs budget for no
 information.
 
-**What it is now.** `rework.yaml` wakes on `workflow_run: completed` for `ci` and `reviewer`,
+**What it is now.** `rework.yaml` wakes on `workflow_run: completed` for `ci`,
 identifies the agent PR by its head branch, and dispatches the next actor within seconds:
 
 | Where | On | It does |
 |---|---|---|
 | `rework.yaml` | `ci` red | dispatch `agent.yaml` on the PR's issue, same role |
 | `rework.yaml` | `ci` green | dispatch `reviewer.yaml` on that PR |
-| `reviewer.yaml` | `request_changes`, or no verdict at all | dispatch `agent.yaml`, same role |
+| `reviewer.yaml` | `request_changes` | dispatch `agent.yaml`, same role |
+| `reviewer.yaml` | no verdict at all — a crash, a timeout | ping the owner and stop; nothing is charged to the issue |
 | `reviewer.yaml` | `approve` | label the PR `status:owner` and ping the owner |
 
 So the owner's queue is only ever PRs that are green **and** approved.
@@ -82,7 +83,7 @@ PR to post its status, so the verdict acts there. `rework.yaml` looks its PR up 
 branch** for the same reason — `pull_requests` is unreliable, and a head-SHA match breaks the
 moment the branch is pushed again while `ci` is still running.
 
-Three details carry the design:
+Four details carry the design:
 
 - **It dispatches, it does not label.** Adding `agent:<role>` from a workflow would be a
   `GITHUB_TOKEN` event, and GitHub starts no run for one (gap 3) — the loop would silently do
@@ -104,10 +105,10 @@ Three details carry the design:
   three attempts would march a sound PR to `status:stuck` with nothing wrong in it. That case
   pings the owner and stops. Nor is a draft ever reviewed: a `[blocked]` PR is deliberately
   incomplete, and `request_changes` on it would send the agent back at unchanged issue text.
-- **`reviewer.yaml` had to gain that input.** It is `pull_request_target`, and no
-  `pull_request_target` run was created for either of the agent's `GITHUB_TOKEN` pushes on
-  `spec/3-workload-study` (gap 3 again). Waiting for the event would have meant a fix push is
-  never re-reviewed, so the loop dispatches the reviewer explicitly instead.
+- **The reviewer had to become dispatch-only.** It was `pull_request_target`, and no such run
+  was created for either of the agent's `GITHUB_TOKEN` pushes on `spec/3-workload-study` (gap 3
+  again) — so waiting for the event would mean a fix push is never re-reviewed, one round and
+  done. Dispatching it explicitly is what makes the ping-pong possible at all.
 
 **The loop cannot run away**, and the attempt counter is the only thing making that true, so
 two rules protect it. `agent.yaml` counts `Attempt N/3` comments on the issue and, past the
@@ -116,10 +117,14 @@ withdraws its own attempt comment — free to report a wall — and that is a ho
 unless the PR really is a draft: a non-draft PR left red would come back through `ci` red →
 agent → blocked → counter reset, forever. So the withdrawal happens only when a draft PR for
 that issue exists, and `rework.yaml` refuses to dispatch against an issue labelled
-`status:blocked` at all. Note that rework
-dispatches do **not** pass through `AGENT_RUNS_PER_DAY` — that ceiling is the orchestrator's
-step 1 and governs *new* work only. Finishing something already started is bounded by the
-attempt cap, not by the daily budget.
+`status:blocked` at all.
+
+Rework dispatches do not pass through `AGENT_RUNS_PER_DAY`: that gate is the orchestrator's
+step 1 and governs *new* work only, so finishing something already started is bounded by the
+attempt cap rather than by the daily budget. They are exempt from the **gate**, not from the
+**count** — step 1 counts every non-`skipped` `agent.yaml` run, rework's included, and has no
+way to tell them apart. A busy day of rework therefore spends the next day's dispatch budget.
+Defensible, since those runs cost the same; not what "exempt" on its own would imply.
 
 ## An issue's life
 

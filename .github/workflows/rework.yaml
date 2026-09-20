@@ -94,7 +94,15 @@ jobs:
             exit 0
           fi
 
-          # ci red. Only an agent's PR goes back to an agent; the owner's are the owner's.
+          # Only a real failure sends the agent back. `timed_out`, `action_required` (the
+          # approval gate) and `stale` are infrastructure, and charging them to the issue's
+          # three attempts is the same mistake `reviewer.yaml` refuses to make for a verdict.
+          if [ "$CONCLUSION" != failure ]; then
+            echo "ci finished '$CONCLUSION' on PR #$num -- not a verdict on the work."
+            exit 0
+          fi
+
+          # Only an agent's PR goes back to an agent; the owner's are the owner's.
           case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
           if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
 
