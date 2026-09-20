@@ -145,11 +145,54 @@ jobs:
             comments report.
             Toolchain: prefix OCaml commands with `opam exec --` (e.g. `opam exec -- make ci`).
             Finish with a comment on the issue: what you did, the PR link, and anything left open.
+
+            If the issue cannot be done as written -- it contradicts itself, it needs a change
+            outside your lane, or the spec does not settle something you must know -- do not
+            spend the attempt guessing. Do the parts that are settled, open a **draft** PR
+            titled `[blocked] <what you did>` whose body states the blocker in one paragraph,
+            and return `outcome: blocked` with that blocker as `reason`. A blocked outcome is
+            a result, not a failure: it costs no further attempt and the orchestrator picks it
+            up. Returning `outcome: done` on work you could not finish does cost one.
           claude_args: >-
             --model ${{ steps.attempt.outputs.model }}
             --max-turns 200
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep,TodoWrite"
             ${{ steps.lane.outputs.deny && format('--disallowedTools {0}', steps.lane.outputs.deny) || '' }}
+            --json-schema '{"type":"object","properties":{"outcome":{"type":"string","enum":["done","blocked"]},"reason":{"type":"string"},"pr":{"type":"string"}},"required":["outcome","reason"]}'
+
+      # A blocked outcome is the agent saying the issue cannot be done as written. It is a
+      # result, so it must not look like a failed attempt: the issue goes to `status:blocked`
+      # for the orchestrator's next round rather than back into the dispatch queue, and the
+      # `Attempt N/3` comment this run wrote is withdrawn so the block costs nothing. Retrying
+      # an issue whose text is the problem just spends attempts on the same wall.
+      - name: Blocked outcome
+        if: always() && steps.attempt.outputs.go == 'true' && steps.claude.outputs.structured_output
+        id: outcome
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.ctx.outputs.issue }}
+          ROLE: ${{ steps.ctx.outputs.role }}
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          outcome=$(jq -r '.outcome // "done"' <<<"$RESULT")
+          echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+          [ "$outcome" = blocked ] || exit 0
+          reason=$(jq -r '.reason' <<<"$RESULT")
+          gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" \
+            --add-label status:blocked --remove-label status:running || true
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body \
+            "**Blocked** ($ROLE agent, run: $RUN_URL)
+
+          $reason
+
+          This did not consume an attempt. The orchestrator will decide on its next run whether
+          to rewrite the issue, file the issue this one depends on, or hand it to @rechefe."
+          # Withdraw this run's attempt comment so the block is free.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate \
+            --jq "[.[] | select(.user.login==\"github-actions[bot]\" and (.body|startswith(\"Attempt \")))] | last | .id")
+          [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
 
       - name: Release dispatch label
         if: always() && steps.attempt.outputs.go == 'true'
@@ -158,9 +201,11 @@ jobs:
           ISSUE: ${{ steps.ctx.outputs.issue }}
           ROLE: ${{ steps.ctx.outputs.role }}
           OK: ${{ steps.claude.outputs.conclusion == 'success' }}
+          BLOCKED: ${{ steps.outcome.outputs.outcome == 'blocked' }}
         run: |
           gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label "agent:$ROLE" || true
-          # A failed run goes back to the queue; a successful one stays running until its PR merges.
-          if [ "$OK" != true ]; then
+          # A failed run goes back to the queue; a successful one stays running until its PR
+          # merges; a blocked one is already labelled and waits for the orchestrator.
+          if [ "$OK" != true ] && [ "$BLOCKED" != true ]; then
             gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --remove-label status:running --add-label status:ready || true
           fi

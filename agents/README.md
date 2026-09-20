@@ -17,7 +17,7 @@ not this one.
 | `reviewer.yaml` | `pull_request_target`, or `workflow_dispatch` with a PR number | `github-actions[bot]` | Grill a PR; its verdict is a required check. |
 | `ci.yaml` | every pull request, pushes to `main`, or `workflow_dispatch` | — | `rtl`, `sim`, `formal`. |
 | `rework.yaml` | `workflow_run` completed for `ci` or `reviewer` | — | Closes the loop: dispatches the next actor on an agent PR, or hands a green and approved one to the owner. Acts only on branches `<role>/…` opened by `claude[bot]`. |
-| `gds.yaml` / `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
+| `docs.yaml` | PRs to `main`, `main`, nightly, or `workflow_dispatch` | — | Hardening, precheck, gate-level test, datasheet. `gds` also has a `viewer` job that deploys the layout to Pages with `pages: write` — the only *declared* write permission among the build and harden workflows; `docs.yaml`, `fpga.yaml` and `gds.yaml`'s other jobs declare no `permissions:` block at all, so their token scope is the repository default rather than anything in the repo — skipped on `pull_request` so a PR cannot publish over `main`'s. (`setup.yaml` also takes `contents: write` and `issues: write` for its one-time job.) |
 | `setup.yaml` | `workflow_dispatch` only | — | One-time and idempotent: creates the label set and the `spec-provisional` branch everything else leans on. |
 | `fpga.yaml` | `workflow_dispatch` only — `branches: none` disables its push trigger | — | iCE40UP5K bitstream, the stock Tiny Tapeout target. Never wired into the agent loop, and not the board `PLAN.md` names — see gap 5. |
 
@@ -298,8 +298,10 @@ Model choice is automatic: `spec` always runs on Opus; `designer` and `verifier`
 and escalate to Opus on their third attempt.
 
 CI is paced too. `ci` runs on every pull request and on `main`, but `gds` — hardening plus
-precheck, about an hour on a 6x4 die — runs only on PRs to `main`, on `main`, nightly, and on
-manual `workflow_dispatch`.
+precheck, about an hour on a 6x4 die — runs on `main`, nightly, and on manual
+`workflow_dispatch`, and **not on pull requests at all**: an hour of latency in every rework
+round is the largest tax the loop can carry, and area and timing are properties of `main`
+rather than of one PR. It must therefore not be a required status check.
 
 ## Watching a run
 
@@ -328,11 +330,15 @@ git history and the open issues before trusting it.
    leaves the issue marked running forever, with nothing to retry it. The benign variant of
    the same asymmetry: nothing clears `status:running` on a merge either, so closed issues
    keep the label.
-2. **An agent cannot report "this task is impossible" in a way anything notices.** The
-   instruction to finish with a comment on the issue is in the workflow prompt in
-   `agent.yaml`, not in the role files — only `spec.md` repeats it, while `designer.md` and
-   `verifier.md` end at "open a PR" — and nothing enforces it anywhere. Unlike the reviewer, worker
-   agents return no structured outcome.
+2. ~~**An agent cannot report "this task is impossible" in a way anything notices.**~~
+   **Closed.** Worker agents now return `{outcome, reason}`, the protocol is in all three role
+   files, and `outcome: blocked` labels the issue `status:blocked`, withdraws the attempt
+   comment so the block is free, and opens a draft `[blocked]` PR that `ci` skips and
+   `rework.yaml` leaves alone. The orchestrator's step 3 decides: file the prerequisite,
+   rewrite the issue, or ask the owner. Issue #8 is the case that motivated it — a designer
+   run that concluded `success`, opened no PR, and stranded its issue for a day, because the
+   issue as written required `make ci` green while forbidding the `test/` edit that would
+   make it so.
 3. **An agent's `git push` starts no workflow run.** `agent.yaml`'s `actions/checkout` takes
    no `token:` and no `persist-credentials: false`, so checkout persists the default
    `GITHUB_TOKEN` as git's credential and **every `git push` an agent makes goes out under

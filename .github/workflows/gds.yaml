@@ -1,11 +1,17 @@
-# Hardening, precheck and gate-level test. ~1 h on a 6x4 die, so it is paced: pull requests
-# to main (where it is a required check), main itself, and a nightly run. Not every push to
-# every branch. This workflow reads no secrets, so `pull_request` is safe.
+# Hardening, precheck and gate-level test. ~1 h on a 6x4 die, which is why it does **not** run
+# on pull requests: it would put an hour of latency into every round of the agent rework loop,
+# and area and timing are properties of `main`, not of an individual PR. `rtl`, `sim` and
+# `formal` are the per-PR gates; this is the daily one.
+#
+# It therefore must NOT be a required status check. A required check that no PR event reports
+# leaves every PR permanently unmergeable, which is how PR #5 died -- see gap 3 in
+# agents/README.md. Run it by hand on a PR with `workflow_dispatch` when a change plausibly
+# moves area or timing.
+#
+# This workflow reads no secrets.
 name: gds
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
   schedule:
@@ -47,8 +53,10 @@ jobs:
 
   viewer:
     needs: gds
-    # Pages holds the layout of `main`; a pull request must not publish over it.
-    if: github.event_name != 'pull_request'
+    # Pages holds the layout of `main`. The old guard was on `pull_request`, which this
+    # workflow no longer has; a `workflow_dispatch` on a branch would now publish over it,
+    # so guard on the ref instead.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       pages: write # to deploy to Pages

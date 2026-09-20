@@ -52,7 +52,7 @@ jobs:
           set -euo pipefail
 
           # The PR this run belongs to: match the open PR whose head commit is this run's.
-          pr=$(gh pr list -R "$REPO" --state open --json number,headRefName,headRefOid,author,body \
+          pr=$(gh pr list -R "$REPO" --state open --json number,headRefName,headRefOid,author,body,isDraft \
                  --jq ".[] | select(.headRefOid==\"$HEAD_SHA\") | @json" | head -n1)
           if [ -z "$pr" ]; then echo "No open PR at $HEAD_SHA -- nothing to do."; exit 0; fi
 
@@ -64,6 +64,14 @@ jobs:
           # Agent PRs only. Anything else is the owner's and is not ours to drive.
           case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
           if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
+
+          # A draft is an agent's blocked outcome: it says the issue cannot be done as written,
+          # and re-dispatching would spend attempts on the same wall. The orchestrator owns it
+          # from here -- see `status:blocked` in agents/orchestrator.md.
+          if [ "$(jq -r .isDraft <<<"$pr")" = true ]; then
+            echo "PR #$num is a draft (blocked); the orchestrator decides, not this loop."
+            exit 0
+          fi
 
           issue=$(jq -r .body <<<"$pr" | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
           if [ -z "$issue" ]; then
