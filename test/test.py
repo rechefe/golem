@@ -6,8 +6,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge
 
-CYCLES_PER_BIT = 434  # TOP-PIN-001: divisor 433 -> 115200 baud at 50 MHz
-CLOCK_NS = 20  # 50 MHz
+CYCLES_PER_BIT = 418  # TOP-PIN-001: divisor 417 -> 115200 baud at 48 MHz
+CLOCK_NS = 20.833  # 48 MHz
 
 
 def tx(dut):
@@ -58,7 +58,7 @@ async def test_reset_idle(dut):
 
 @cocotb.test()
 async def test_frames_on_pins(dut):
-    """TOP-PIN-001: bytes appear on uo_out[0] as 8N1 frames at 434 cycles per bit."""
+    """TOP-PIN-001: bytes appear on uo_out[0] as 8N1 frames at 418 cycles per bit."""
     await reset(dut)
     for byte in (0x55, 0xA5, 0x00, 0xFF, 0x3C):
         bits = await send_and_capture(dut, byte)
