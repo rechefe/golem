@@ -29,6 +29,10 @@ module uart_tx_formal (
     past_valid <= 1'b1;
     past_clear <= clear;
   end
+  // #23: this is the initial-reset anchor spec/emet.md cannot express (no `assume`, no
+  // initial-state construct -- see its "Limitations of v0"). When this file is retired for
+  // the generated `emet_utx` monitor, carry an equivalent assumption into the .sby harness,
+  // or wait for #22 to settle where the anchor belongs in the MAS. Do not drop it silently.
   always @(*) if (!past_valid) assume (clear);
 
   // ---------------------------------------------------------------------------
@@ -101,6 +105,11 @@ module uart_tx_formal (
 
       // UTX-HSK-004 / UTX-HSK-001: no frame in progress => ready, so no frame starts
       // without an accept edge.
+      // #23: this is the *global* form. The emet property in spec/uart_tx.md is local -- it
+      // pins `ready` from an idle edge through the next accept edge -- and is satisfied by a
+      // design that holds `ready = 0` until the first `clear`. Carry this assert (or its
+      // equivalent) forward when this file is retired; it depends on the anchor above, and
+      // #22 tracks where that anchor permanently lives.
       if (!active && !past_clear) UTX_HSK_004: assert (ready);
     end
   end
