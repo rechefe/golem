@@ -146,7 +146,9 @@ jobs:
             issue #${{ steps.ctx.outputs.issue }} (`gh issue view ${{ steps.ctx.outputs.issue }} --comments`).
             This is attempt ${{ steps.attempt.outputs.n }} of 3. If an open PR for this issue
             already exists, continue on its branch: fix what its failing CI checks and review
-            comments report.
+            comments report. If that PR is a `[blocked]` draft and the blocker is gone, mark it
+            ready (`gh pr ready <n>`) and drop the `[blocked]` prefix -- a draft gets no CI run
+            and nothing in the loop drives one, so leaving it in draft strands the issue.
             Toolchain: prefix OCaml commands with `opam exec --` (e.g. `opam exec -- make ci`).
             Finish with a comment on the issue: what you did, the PR link, and anything left open.
 

@@ -34,7 +34,12 @@ tools are issues, labels and comments; your measure is the milestone table in `P
    - the blocker is a missing prerequisite → file the issue that supplies it (`Role:` line,
      `status:ready`), link it, and leave this one blocked;
    - the blocker is the issue's own text → rewrite the issue so it is achievable, swap
-     `status:blocked` for `status:ready`, and say in a comment what you changed;
+     `status:blocked` for `status:ready`, say in a comment what you changed, **and mark the
+     issue's `[blocked]` draft PR ready again** (`gh pr ready <n>`, and drop the `[blocked]`
+     prefix from its title). A draft gets no `ci` run and `rework.yaml` drives no draft, so
+     leaving it in draft means the retry pushes into a PR nothing can check and nothing can
+     merge — the issue would sit `status:running`, holding its role's slot, with no red check
+     for step 4 to notice;
    - the blocker needs a decision only the owner can make → one comment mentioning `@rechefe`
      with the question and the options, and leave it blocked.
 

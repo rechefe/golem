@@ -138,8 +138,18 @@ jobs:
           fi
 
           # Only an agent's PR goes back to an agent; the owner's are the owner's.
-          case "$role" in spec|designer|verifier) ;; *) echo "PR #$num is not an agent branch."; exit 0;; esac
-          if [ "$author" != "claude[bot]" ]; then echo "PR #$num was not opened by claude[bot]."; exit 0; fi
+          case "$role" in
+            spec|designer|verifier) ;;
+            *) echo "PR #$num: branch '$branch' is not an agent branch."; exit 0 ;;
+          esac
+          # Both spellings. `gh --json author` is GraphQL-backed and renders a bot login as
+          # `app/claude`; the webhook payload `agent.yaml` guards on says `claude[bot]`. Same
+          # identity, two sources, and taking only one silently kills every transition below.
+          case "$author" in
+            'claude[bot]'|app/claude) ;;
+            *) echo "PR #$num: author '$author' is not the agent app."; exit 0 ;;
+          esac
+          echo "PR #$num: role=$role author=$author -- driving."
 
           issue=$(jq -r .body <<<"$pr" | grep -oiE 'closes #[0-9]+' | head -n1 | grep -oE '[0-9]+' || true)
           if [ -z "$issue" ]; then

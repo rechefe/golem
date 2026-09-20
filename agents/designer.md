@@ -54,6 +54,12 @@ Do it like this:
    blocker in a comment on it. Leaving it out of draft is not cosmetic: a blocked outcome
    withdraws this run's attempt, and a non-draft PR still red on CI would be dispatched back
    to you forever, with the attempt counter reset each time.
+
+   **Draft is not a one-way door.** If you are dispatched onto an issue whose open PR is a
+   `[blocked]` draft and the blocker is gone — the issue was rewritten, the prerequisite
+   landed — mark it ready before you finish: `gh pr ready <n>`, and drop the `[blocked]`
+   prefix from its title. A draft gets no `ci` run and nothing in the loop drives one, so a
+   PR left in draft is a PR nobody can check and nobody can merge.
 3. Return `outcome: blocked` with that same blocker as `reason`.
 
 The orchestrator reads it on its next run and either files the prerequisite issue, rewrites
