@@ -1,6 +1,11 @@
 # SymbiYosys job for golem_uart_tx against spec/uart_tx.md.
 #   prove: unbounded proof of every assertion (PDR, no depth limit)
 #   cover: every COVER_* is reachable, so no assertion holds vacuously
+#
+# #23: when uart_tx_props.v is retired in favour of the generated emet_utx monitor, this job
+# must keep (or replace) two things that live only in that file today: the initial-reset
+# assumption that anchors the DUT's start state, and the global form of UTX-HSK-004. Say so
+# explicitly in whatever script replaces this one.
 [tasks]
 prove
 cover
