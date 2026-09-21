@@ -26,8 +26,9 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-(* 115200 baud at 50 MHz: 434 cycles per bit (TOP-PIN-001). *)
-let gate_divisor = 433
+(* 115200 baud at 48 MHz: 418 cycles per bit, divisor 417 (TOP-PIN-001, TOP-CLK-001).
+   spec/top.md's TOP-PIN-001 still states the 50 MHz/433 values pending the TOP v2 issue. *)
+let gate_divisor = 417
 
 let create scope (i : _ I.t) : _ O.t =
   let uart =
