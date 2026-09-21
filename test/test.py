@@ -2,12 +2,27 @@
 # cocotb tests for the Tiny Tapeout top (spec/top.md) through the real pins.
 # Runs on RTL (`make sim`) and on the gate-level netlist (GATES=yes, in the gds workflow).
 
+import sys
+from pathlib import Path
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "formal" / "emet" / "generated"))
+from covers import COVERS  # noqa: E402  (generated; see formal/emet/compile.py)
+
 CYCLES_PER_BIT = 434  # TOP-PIN-001: divisor 433 -> 115200 baud at 50 MHz
 CLOCK_NS = 20  # 50 MHz
+
+
+def assert_emet_ok(dut):
+    """issue #19, point 3: emet_fail is sticky, so checking once here (rather
+    than at the edge it rises) still catches a failure anywhere earlier in
+    this test. Not present under GATES=yes (see tb.v: RTL only)."""
+    fail = getattr(dut, "emet_any_fail", None)
+    if fail is not None:
+        assert int(fail.value) == 0, "an emet property failed during this test"
 
 
 def tx(dut):
@@ -54,6 +69,7 @@ async def test_reset_idle(dut):
     assert int(dut.uio_oe.value) == 0
     assert int(dut.uio_out.value) == 0
     assert int(dut.uo_out.value) >> 2 == 0
+    assert_emet_ok(dut)
 
 
 @cocotb.test()
@@ -69,6 +85,7 @@ async def test_frames_on_pins(dut):
         assert stop == 1, f"stop bit for {byte:#04x}"
         await ClockCycles(dut.clk, CYCLES_PER_BIT)
         assert ready(dut) == 1, "ready after the frame"
+    assert_emet_ok(dut)
 
 
 @cocotb.test()
@@ -94,3 +111,18 @@ async def test_busy_ignores_valid(dut):
 
     assert decode(bits[:10]) == 0x81, "first frame unaffected by the held valid"
     assert decode(bits[10:]) == 0x7E, "second byte sent right after the first"
+    assert_emet_ok(dut)
+
+
+@cocotb.test()
+async def test_emet_coverage_report(dut):
+    """issue #19, point 3: report which emet cover scenarios this run hit.
+    Defined last so it sees the covers accumulated by every test above --
+    cocotb runs a module's tests in definition order against one continuing
+    simulation, and the `_hit` flags are sticky for the whole run."""
+    await reset(dut)
+    for inst, label in COVERS:
+        monitor = getattr(dut, inst, None)
+        hit = bool(getattr(monitor, f"{label}_hit").value) if monitor is not None else None
+        dut._log.info("emet cover %s.%s: %s", inst, label, "hit" if hit else "MISSED")
+    assert_emet_ok(dut)

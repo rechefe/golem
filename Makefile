@@ -2,14 +2,17 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-GENERATED := src/golem.v
-SBY_JOBS  := $(wildcard formal/*.sby)
+GENERATED     := src/golem.v
+EMET_GENERATED := formal/emet/generated
+SBY_JOBS      := $(wildcard formal/*.sby) $(wildcard $(EMET_GENERATED)/*.sby)
 
-.PHONY: all ci rtl unit sim formal check-generated clean
+.PHONY: all ci rtl unit sim formal check-generated emet check-emet-generated clean
 
 all: ci
 
-ci: rtl unit check-generated sim formal
+# emet (and its check-generated gate) must come before sim/formal: both harnesses
+# consume formal/emet/generated/*.
+ci: rtl unit check-generated emet check-emet-generated sim formal
 
 # Build the Hardcaml design and regenerate the Verilog Tiny Tapeout consumes.
 rtl:
@@ -27,6 +30,20 @@ check-generated: rtl
 	  git --no-pager diff --stat -- $(GENERATED) >&2; exit 1; \
 	fi
 
+# The emet compiler (formal/emet/): every ```emet block in spec/'s block files
+# (spec/README.md's Files table) -> formal/emet/generated/*.
+emet:
+	python3 formal/emet/compile.py
+
+# Fails when formal/emet/generated/* differs from what the compiler emits from
+# spec/ (a spec edit that wasn't recompiled), the same role check-generated
+# plays for src/golem.v.
+check-emet-generated: emet
+	@if ! git diff --quiet -- $(EMET_GENERATED); then \
+	  echo "error: $(EMET_GENERATED) is stale; run 'make emet' and commit." >&2; \
+	  git --no-pager diff --stat -- $(EMET_GENERATED) >&2; exit 1; \
+	fi
+
 # cocotb tests on the generated Verilog (RTL simulation).
 sim:
 	cd test && $(MAKE) clean && $(MAKE)
@@ -36,10 +53,11 @@ sim:
 formal:
 	@for job in $(SBY_JOBS); do \
 	  echo "== $$job"; \
-	  (cd formal && sby -f $$(basename $$job)) || exit 1; \
+	  (cd $$(dirname $$job) && sby -f $$(basename $$job)) || exit 1; \
 	done
 
 clean:
 	cd rtl && dune clean
 	cd test && $(MAKE) clean || true
-	find formal -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+	find formal -mindepth 1 -maxdepth 1 -type d ! -name emet -exec rm -rf {} +
+	find $(EMET_GENERATED) -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +

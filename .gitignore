@@ -11,10 +11,15 @@ test/sim_build
 test/__pycache__/
 test/results.xml
 test/gate_level_netlist.v
+__pycache__/
+.pytest_cache/
 # OCaml / dune
 rtl/_build
 _opam
-# SymbiYosys run directories (one per job/task)
+# SymbiYosys run directories (one per job/task), but not the emet compiler's own
+# source tree (formal/emet/) -- only its generated/ subdirectory holds run dirs.
 formal/*/
+!formal/emet/
+formal/emet/generated/*/
 # cocotb
 test/output

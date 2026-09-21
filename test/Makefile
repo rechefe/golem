@@ -14,6 +14,12 @@ ifneq ($(GATES),yes)
 SIM_BUILD				= sim_build/rtl
 VERILOG_SOURCES += $(addprefix $(SRC_DIR)/,$(PROJECT_SOURCES))
 
+# emet monitors (issue #19): RTL only, see tb.v -- a gate-level netlist doesn't
+# preserve the block-level instance names the monitors are wired to.
+COMPILE_ARGS += -DEMET_SIM
+-include ../formal/emet/generated/sim_sources.mk
+VERILOG_SOURCES += $(EMET_GENERATED_SOURCES)
+
 else
 
 # Gate level simulation:
