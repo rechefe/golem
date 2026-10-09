@@ -79,9 +79,10 @@ jobs:
           # `--paginate` without `--slurp` runs `--jq` per page, so past 30 comments this
           # emitted one number per page and `$((prev + 1))` became a bash arithmetic error --
           # on exactly the long-lived issues where the cap matters. `--slurp` gives one array
-          # of pages; `.[][]` flattens it.
+          # of pages; `.[][]` flattens it. gh >= 2.100 refuses `--slurp` together with `--jq`,
+          # so the filter runs in a separate `jq` (#32).
           prev=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --slurp \
-            --jq '[.[][] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | length')
+            | jq '[.[][] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | length')
           n=$((prev + 1))
           if [ "$n" -gt 3 ]; then
             gh issue edit "$ISSUE" -R "$GITHUB_REPOSITORY" --add-label status:stuck --remove-label "agent:$ROLE,status:running" || true
@@ -224,7 +225,7 @@ jobs:
           # empty array yields the string "null", which passes `[ -n ]` and would DELETE
           # /comments/null.
           id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE/comments" --paginate --slurp \
-            --jq "[.[][] | select(.user.login==\"github-actions[bot]\" and (.body|startswith(\"Attempt \")))] | last | .id // empty")
+            | jq -r '[.[][] | select(.user.login=="github-actions[bot]" and (.body|startswith("Attempt ")))] | last | .id // empty')
           [ -n "$id" ] && gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$id" || true
 
       - name: Release dispatch label
